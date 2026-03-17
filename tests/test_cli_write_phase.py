@@ -268,6 +268,64 @@ class TestWritePhaseOverwrite:
 
 
 # ---------------------------------------------------------------------------
+# TestWritePhaseForceWarning: --force --stdin 上書き警告
+# ---------------------------------------------------------------------------
+
+class TestWritePhaseForceWarning:
+    """
+    --force --stdin で既存コンテンツを上書きするとき、
+    stderr に "[Warn] Overwriting <file> (current phase target)" が出ることを検証する。
+    stdout は汚染されないこと。
+    """
+    RUN = "2099-01-01_test-case_force-warning"
+    CONTENT = _meaningful_content(5)
+
+    def _setup(self, tmp_path: Path) -> Path:
+        _setup_env(tmp_path)
+        run_dir = _create_run(tmp_path, self.RUN)
+        _fill_file(run_dir, "execution-assignment.md")
+        _fill_file(run_dir, "goal.md")
+        # plan.md に部分的な記入（上書き保護対象）
+        (run_dir / "plan.md").write_text(
+            "# Plan\n\nExisting content.\n", encoding="utf-8"
+        )
+        return run_dir
+
+    def test_force_stdin_warns_on_stderr(self, tmp_path: Path) -> None:
+        """--force --stdin で上書きするとき stderr に警告が出る。"""
+        self._setup(tmp_path)
+        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin", "--force"], self.CONTENT)
+        assert result.exit_code == 0, result.output
+        assert "Overwriting" in result.stderr
+        assert "plan.md" in result.stderr
+
+    def test_force_stdin_warning_mentions_phase_target(self, tmp_path: Path) -> None:
+        """警告メッセージに 'current phase target' が含まれる。"""
+        self._setup(tmp_path)
+        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin", "--force"], self.CONTENT)
+        assert result.exit_code == 0
+        assert "current phase target" in result.stderr
+
+    def test_force_stdin_warning_not_in_stdout(self, tmp_path: Path) -> None:
+        """上書き警告は stdout に出ない（pipe 透過性を保つ）。"""
+        self._setup(tmp_path)
+        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin", "--force"], self.CONTENT)
+        assert result.exit_code == 0
+        assert "Overwriting" not in result.stdout
+
+    def test_force_stdin_no_warning_when_no_existing_content(self, tmp_path: Path) -> None:
+        """既存コンテンツがない場合は警告が出ない。"""
+        _setup_env(tmp_path)
+        run_dir = _create_run(tmp_path, self.RUN)
+        _fill_file(run_dir, "execution-assignment.md")
+        _fill_file(run_dir, "goal.md")
+        # plan.md は空（テンプレートのまま）
+        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin", "--force"], self.CONTENT)
+        assert result.exit_code == 0
+        assert "Overwriting" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
 # TestWritePhaseDryRun: --dry-run オプション
 # ---------------------------------------------------------------------------
 

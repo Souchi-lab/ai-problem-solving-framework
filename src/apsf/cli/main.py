@@ -692,6 +692,13 @@ def write_phase_cmd(
                 typer.echo("Cancelled.", err=True)
                 raise typer.Exit(0)
 
+    # ── Force overwrite notice → stderr ──────────────────────────────────────
+    # --force --stdin で既存コンテンツを上書きするとき、誤上書きを防ぐための警告
+    if force and use_stdin and detector._has_any_content(target_file):
+        typer.echo(
+            f"[Warn] Overwriting {target_file} (current phase target)", err=True
+        )
+
     # ── Write target notice → stderr ─────────────────────────────────────────
     # 保存直前に保存先を明示してミス・迷いを防ぐ
     dash = "-" * 60
