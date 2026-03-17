@@ -1,0 +1,63 @@
+# =============================================================
+# APSF — .gitignore
+# =============================================================
+
+# ----- Python ------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ----- Build / Packaging ------------------------------------
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+MANIFEST
+
+# ----- Virtual environment ----------------------------------
+.venv/
+venv/
+env/
+.env/
+
+# ----- Secrets / Environment variables ----------------------
+# .env.example は追跡対象（テンプレート）
+.env
+.env.local
+.env.*.local
+
+# ----- Test / Coverage --------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ----- Claude Code (machine-specific) -----------------------
+.claude/
+
+# ----- Editor / OS ------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# ----- runs/ 実行ログ ----------------------------------------
+# _template/ と README.md は追跡対象（↓ で除外解除済み）
+# 実際の run ディレクトリはデフォルト除外
+# 個別に追加したい場合: git add -f runs/<run-name>/
+runs/*/
+!runs/_template/
+!runs/_template/**
+!runs/README.md
+
+# ----- workspaces/ エージェント作業領域 ----------------------
+# README.md は追跡対象。作業ファイルは除外
+workspaces/*/*
+!workspaces/*/README.md
