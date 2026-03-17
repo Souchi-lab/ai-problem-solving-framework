@@ -108,10 +108,73 @@ apsf show-structure
 ### 4. 最初の run を作る
 
 ```bash
-apsf init-run 2026-03-15_sochi-blocks_sns-post-template
+apsf start-run sochi-blocks_sns-post-template
+# → 日付が自動付与される: 2026-03-15_sochi-blocks_sns-post-template
 ```
 
-### 5. goal.md を書いてループを開始する
+### 5. パイプ運用を使う場合は LLM CLI を用意する（オプション）
+
+`apsf act --print-prompt | <ai-cli> | apsf write-phase --stdin` のパイプ運用を使うには、
+**stdin からプロンプトを受け取り、stdout に応答テキストだけを出力できる LLM CLI** が必要。
+
+**なぜ必要か**: APSF は phase 管理・prompt 生成・ファイル保存を担う。
+AI によるテキスト生成の部分は外部 CLI に委ねる設計のため。
+
+**現時点の推奨: `llm`**
+
+```bash
+pip install llm
+llm keys set anthropic   # または: llm keys set openai / gemini
+```
+
+セットアップ後:
+
+```bash
+RUN=2026-03-17_my-case_my-topic
+
+# Plan / Build / Review を同じパターンで実行（フェーズ自動進行）
+apsf act $RUN --print-prompt 2>/dev/null | llm | apsf write-phase $RUN --stdin
+apsf act $RUN --print-prompt 2>/dev/null | llm | apsf write-phase $RUN --stdin
+apsf act $RUN --print-prompt 2>/dev/null | llm | apsf write-phase $RUN --stdin
+
+# → apsf next $RUN で IMPROVE_NEEDED になり Human 停止
+```
+
+**比較対象の AI CLI**（検証済み）:
+
+| CLI | 状態 | 備考 |
+|---|---|---|
+| `llm` | ✅ 推奨 | `pip install llm`。pure text I/O。 |
+| `claude -p` | △ 条件付き | 通常 PowerShell（`pwsh` 推奨）で 3 phase 完走確認済み。Claude Code セッション内からは不可。PS 5.1 は UTF-8 設定が必要。ラッパー: `scripts/apsf-claude-act.ps1` |
+| `codex` | ❌ 非推奨 | agentic モードで動作し、ファイルを読み書きする。stdout にヘッダー混在。APSF パイプ不成立。 |
+| `gemini -p ""` | ❌ 非推奨 | agentic モードで動作し stdout に応答本文が出ない。 |
+
+詳細: [`framework/cli-orchestrator.md`](framework/cli-orchestrator.md)
+
+**Windows での推奨実行環境**:
+
+| 環境 | 推奨度 | 備考 |
+|---|---|---|
+| `pwsh`（PowerShell 7+） | ✅ **推奨** | UTF-8 デフォルト。設定不要。`winget install Microsoft.PowerShell` |
+| Windows PowerShell 5.1 | △ | 事前に `$OutputEncoding` + `[Console]::OutputEncoding` の UTF-8 設定が必要 |
+| Git Bash / WSL | ✅ 使用可 | Unix 系動作のため UTF-8 問題なし |
+
+**`claude -p` を使う場合のラッパースクリプト**（UTF-8 設定・Human 停止チェック込み）:
+
+```powershell
+# 1 フェーズ実行
+.\scripts\apsf-claude-act.ps1 2026-03-17_my-case_my-topic
+
+# 確認のみ（保存しない）
+.\scripts\apsf-claude-act.ps1 2026-03-17_my-case_my-topic -DryRun
+```
+
+LLM CLI なしでも `apsf act <run> --print-prompt` でプロンプトを取得し、
+任意の AI ツールに手動で貼り付けてから `apsf write-phase <run> --stdin` で保存できる。
+
+---
+
+### 6. goal.md を書いてループを開始する
 
 ```
 runs/2026-03-15_sochi-blocks_sns-post-template/
@@ -127,17 +190,19 @@ runs/2026-03-15_sochi-blocks_sns-post-template/
 
 ---
 
-## v0.1 でできること / まだやらないこと
+## v0.1 / v0.2 でできること
 
-| 機能 | v0.1 | v0.2+ |
+| 機能 | v0.1 | v0.2 |
 |---|---|---|
 | Markdown ベースのループ運用 | ✅ | |
-| CLI で run 初期化 | ✅ | |
-| multi-model assignment 定義 | ✅（手動） | 自動スケジューリング |
-| handoff.md による role 間受け渡し | ✅（手動） | 自動生成 |
-| Provider stub / 骨格実装 | ✅ | 実 API 完全接続 |
-| Pipeline dry-run | ✅ | 実行自動化 |
-| Judge による自動評価 | ❌ | ✅ |
+| CLI で run 初期化・フェーズ管理 | ✅ | |
+| multi-model assignment 定義 | ✅（手動） | |
+| `apsf act` による phase 自動生成 | ✅ | |
+| `--print-prompt` / `--stdin` パイプ運用 | ✅ | |
+| stdout/stderr 分離（pipe 透過設計） | ✅ | |
+| Improve Plan / Verify オプションフェーズ | ✅（手動作成時のみ） | |
+| 互換 LLM CLI による完全自動パイプ | △（`llm` 設定が必要） | ✅ 標準フロー化 |
+| Judge による自動評価 | ❌ | 候補 |
 | 並列 Build 比較 | ❌ | ✅ |
 
 ---
