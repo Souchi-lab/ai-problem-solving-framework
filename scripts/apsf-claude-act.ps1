@@ -85,12 +85,16 @@ if ($isHuman) {
 
 # DryRun: show plan without executing
 if ($DryRun) {
-    $hasContent    = (Test-Path $targetPath) -and ((Get-Content $targetPath -Raw -ErrorAction SilentlyContinue) -match '\S')
-    if ($hasContent) {
-        $overwriteRisk = "yes  (existing content detected in $targetFile)"
+    # Use apsf act --dry-run to leverage APSF core's _is_filled() threshold.
+    # [Info] in output means the file already has meaningful content (filled).
+    # Any other output (DRY-RUN, prompt text) means template-only or empty.
+    # This avoids the coarse -match '\S' check that fires on template headers.
+    $actDryOut = apsf act $Run --dry-run 2>$null
+    if ($actDryOut -match "\[Info\]") {
+        $overwriteRisk = "yes (meaningful content detected)"
         $riskColor     = "Yellow"
     } else {
-        $overwriteRisk = "no"
+        $overwriteRisk = "no (template only)"
         $riskColor     = "DarkGray"
     }
 
