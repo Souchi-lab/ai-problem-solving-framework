@@ -519,4 +519,71 @@ CLI 表示ロジックと instruction 生成ロジックは分離されている
 
 ---
 
+## 日常運用フロー（外部 PowerShell + claude -p）
+
+推奨環境: `pwsh`（PowerShell 7+）。PS 5.1 の場合は UTF-8 設定が必要（前述参照）。
+
+```powershell
+# 0. プロジェクトルートに移動
+cd C:\Users\PC_User\PRJ\ai-problem-solving-framework
+$RUN = "2026-03-18_my-case_my-topic"
+
+# 1. DryRun で確認（phase / 対象ファイル / 上書きリスクを表示）
+.\scripts\apsf-claude-act.ps1 $RUN -DryRun
+
+# 2. 問題なければ本実行
+.\scripts\apsf-claude-act.ps1 $RUN
+
+# 3. 保存結果を確認
+apsf next $RUN
+
+# 4. Plan → Build → Review まで Step 2-3 を繰り返す
+# 5. IMPROVE_NEEDED で Human 停止 → improve.md を手動で記入
+# 6. 摩擦があれば fw-improvement-memo.md に記録
+```
+
+---
+
+## トラブルシューティング（最短復旧）
+
+### 文字化けが起きた（PS 5.1）
+
+```powershell
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# → 再実行。恒久対応は $PROFILE に追加。
+```
+
+### フェーズを再実行したい（上書き）
+
+```powershell
+apsf act $RUN --print-prompt 2>$null | claude -p | apsf write-phase $RUN --stdin --force
+# または: apsf write-phase $RUN --force で対話的に上書き
+```
+
+### Human 停止で stuck している
+
+```powershell
+apsf next $RUN          # 何を書くべきか確認
+# → target file を手動で記入後、apsf next $RUN で次フェーズへ進む
+```
+
+### パイプのどこで失敗したか分からない
+
+`apsf-claude-act.ps1` の `[FAIL] stage=<name> exit=<n>` を確認する:
+
+| `stage=` | 対処 |
+|---|---|
+| `generate-prompt` | `apsf next $RUN` でフェーズ確認。run ディレクトリが存在するか確認。 |
+| `claude-p` | Claude Code のログイン状態を確認。`claude --version` で動作確認。 |
+| `write-phase` | `apsf next $RUN` で現在の target file を確認。`--force` が必要か確認。 |
+
+### transcript を再生成したい
+
+```powershell
+apsf transcript $RUN    # transcript.md を再生成
+```
+
+---
+
 *このファイルは設計の説明文書です。コードと乖離が生じたらコードを優先してください。*
