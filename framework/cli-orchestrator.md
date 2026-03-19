@@ -128,6 +128,13 @@ apsf act <run>   ← LLM を呼び出して自動生成・保存
 - Auto 担当フェーズ（plan.md / build.md / review.md）のみ実行する
 - 1 回の実行で 1 phase だけを処理する（v0.1 設計）
 
+**補足**:
+
+- `1 phase だけを処理する` とは、`apsf act` 1 回で複数 phase 文書を連続生成しない、という意味である
+- ただし Build phase の内部で、Builder がどこまで進んでよいかは `plan.md` の `Build / Execute Policy` に従う
+- 既定値では、Builder は plan.md に明示許可がない限り execute / publish まで進んではならない
+- したがって APSF では「phase の自動遷移」と「phase 内の build 自動進行」は別概念として扱う
+
 **オプション**:
 - `--print-prompt`: LLM に渡すプロンプトを stdout のみに出力して終了。外部 AI CLI へのパイプに使用。
 - `--dry-run`: フェーズ情報とプロンプト全文を表示するだけ（LLM 呼び出しなし）

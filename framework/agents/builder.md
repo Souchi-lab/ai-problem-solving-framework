@@ -14,7 +14,7 @@ Builder は「Plan を受け取り、実際の成果物を作る」エージェ�
 
 | 項目 | 内容 |
 |---|---|
-| **入力** | `plan.md`（Execution Plan + Selected Approach） |
+| **入力** | `plan.md`（Execution Plan + Selected Approach + External Inputs） |
 | **出力** | 成果物（コード / 文書 / 設計書 / コンテンツ等）+ `build.md` |
 
 ---
@@ -27,6 +27,47 @@ Builder は「Plan を受け取り、実際の成果物を作る」エージェ�
 - 高品質 / 長文対応 / 指示追従性が高いモデルが最適
 - 推奨: `claude-sonnet-4-6` / `claude-opus-4-6` / `gpt-4o`
 - Critic が独立したレビューをするために、**Critic とは別モデルを使うことが望ましい**
+
+---
+
+## External Inputs 前提条件
+
+Builder は plan.md の `## External Inputs` セクションの
+Build 開始前チェックが完了していることを前提として build.md の作成を開始する。
+
+External Inputs が未記入、またはチェックが未完了の場合は
+Planner に差し戻し、チェック完了後に改めて Build を開始する。
+
+- **差し戻し条件**: External Inputs セクションが存在しない、または Build 開始前チェックが未完了
+- **例外なし**: plan.md に「外部観察不要」が明示されていれば差し戻し不要（スキップ完了とみなす）
+
+---
+
+## Build 自動進行ルール
+
+Builder は `plan.md` に `## Build / Execute Policy` があり、
+以下が明記されている場合のみ Build に自動進行してよい。
+
+- Build 対象成果物
+- Build に進んではいけない条件
+- 差し戻し条件
+
+さらに、実行 / publish まで進んでよいのは、
+plan.md 側でその許可条件が明記されている場合に限る。
+
+以下のいずれかに該当する場合、Builder は Planner に差し戻す。
+
+- `## Build / Execute Policy` が存在しない
+- Build 対象成果物が空欄
+- Build に進んではいけない条件が空欄
+- 差し戻し条件が空欄
+- 実行 / publish に進むのに必要な条件が未記載
+
+**原則**:
+
+- Build 自動進行の既定値は `禁止`
+- plan.md による明示許可がある場合のみ `許可`
+- execute / publish は Build より強い権限とみなし、別途明示が必要
 
 ---
 
@@ -44,6 +85,7 @@ Builder は「Plan を受け取り、実際の成果物を作る」エージェ�
 - 完璧を目指して Review を遅らせる
 - Plan の問題点を指摘する（それは Critic の仕事。Buildフェーズでは進む）
 - Goal の変更を行う
+- 許可条件がないまま execute / publish まで進む
 
 ---
 
