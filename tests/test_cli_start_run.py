@@ -113,6 +113,41 @@ class TestStartRunCreation:
         assert result.exit_code == 0
         assert "apsf next" in result.output
 
+    def test_creates_run_directory_in_taxonomy(self, tmp_path: Path) -> None:
+        _setup_env(tmp_path)
+        result = _invoke_start_run(
+            tmp_path,
+            [
+                "2099-01-01_test-case_taxonomy-create",
+                "--taxonomy",
+                "fw-improvement",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        run_dir = (
+            tmp_path
+            / "runs"
+            / "fw-improvement"
+            / "2099-01-01_test-case_taxonomy-create"
+        )
+        assert run_dir.exists()
+
+    def test_taxonomy_run_copies_template_files(self, tmp_path: Path) -> None:
+        _setup_env(tmp_path)
+        result = _invoke_start_run(
+            tmp_path,
+            [
+                "2099-01-01_test-case_taxonomy-files",
+                "--taxonomy",
+                "work",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        run_dir = tmp_path / "runs" / "work" / "2099-01-01_test-case_taxonomy-files"
+        assert (run_dir / "goal.md").exists()
+        assert (run_dir / "plan.md").exists()
+        assert (run_dir / "build.md").exists()
+
 
 # ---------------------------------------------------------------------------
 # 日付自動付与
@@ -177,6 +212,22 @@ class TestDryRun:
         )
         assert result.exit_code == 0
         assert "2099-01-01_test-case_name-preview" in result.output
+
+    def test_dry_run_shows_taxonomy_path(self, tmp_path: Path) -> None:
+        _setup_env(tmp_path)
+        result = _invoke_start_run(
+            tmp_path,
+            [
+                "2099-01-01_test-case_taxonomy-preview",
+                "--dry-run",
+                "--taxonomy",
+                "fw-improvement",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "runs" in result.output
+        assert "fw-improvement" in result.output
+        assert "2099-01-01_test-case_taxonomy-preview" in result.output
 
 
 # ---------------------------------------------------------------------------

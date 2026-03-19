@@ -17,6 +17,24 @@ def _section(title: str, content: str) -> str:
     return f"## {title}\n\n{content.strip()}\n\n"
 
 
+def render_setup_prompt(goal_content: str) -> str:
+    """
+    Planner 向けプロンプト（execution-assignment.md 生成用）。
+    goal.md の内容を受け取り、execution-assignment.md 生成指示を組み立てる。
+    """
+    return (
+        "You are a Planner. Create an execution-assignment.md based on the following Goal.\n\n"
+        + _section("Goal", goal_content)
+        + "---\n\n"
+        "Output format: Follow the execution-assignment.md template structure.\n"
+        "Include: Run Name, Goal Summary, Scope Definition (In Scope / Out of Scope table),\n"
+        "Phase Discussion Points (L-1, L-2, ... format, minimum 2 items),\n"
+        "Role Execution Assignment table (Planner / Builder / Critic / Judge),\n"
+        "Deliverables table (filename / content / done criteria),\n"
+        "and Handoff Notes for Planner (recommended approach, caveats).\n"
+    )
+
+
 def render_plan_prompt(goal_content: str) -> str:
     """
     Planner 向けプロンプト。

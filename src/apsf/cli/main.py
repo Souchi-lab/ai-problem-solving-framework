@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 import typer
 
@@ -60,6 +61,11 @@ app = typer.Typer(
 def init_run(
     run_name: str = typer.Argument(..., help="Run name: YYYY-MM-DD_case-key_topic"),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite if exists"),
+    taxonomy: str | None = typer.Option(
+        None,
+        "--taxonomy",
+        help="Target taxonomy root: fw-improvement or work",
+    ),
 ) -> None:
     """指定した名前で runs/ に新しい run ディレクトリを作成する。"""
     from ..config.settings import get_settings
@@ -78,7 +84,7 @@ def init_run(
         raise typer.Exit(1)
 
     try:
-        run_dir = repo.init_run(run_name, force=force)
+        run_dir = repo.init_run(run_name, force=force, taxonomy=taxonomy)
         typer.echo(f"[OK] Run created: {run_dir}")
         typer.echo("\nNext steps:")
         typer.echo(f"  1. Edit {run_dir}/execution-assignment.md  <- how to execute each role")
@@ -144,9 +150,11 @@ def dry_run_cmd(
     from ..config.settings import get_settings
     from ..orchestration.execution_assignment_service import ExecutionAssignmentService
     from ..domain.models import Role, ExecutionType
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
-    run_dir = settings.runs_dir / run_name
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
     assignment_path = run_dir / "execution-assignment.md"
 
     if not run_dir.exists():
@@ -231,9 +239,11 @@ def show_execution_plan(
     """
     from ..config.settings import get_settings
     from ..orchestration.execution_assignment_service import ExecutionAssignmentService
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
-    run_dir = settings.runs_dir / run_name
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
     assignment_path = run_dir / "execution-assignment.md"
 
     if not run_dir.exists():
@@ -273,9 +283,11 @@ def generate_transcript(
     実際の生成は人間（または AI）が行う。
     """
     from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
-    run_dir = settings.runs_dir / run_name
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
 
     if not run_dir.exists():
         typer.echo(f"[ERROR] Run not found: {run_dir}", err=True)
@@ -379,6 +391,11 @@ def start_run_cmd(
     ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite if exists"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview without creating"),
+    taxonomy: str | None = typer.Option(
+        None,
+        "--taxonomy",
+        help="Target taxonomy root: fw-improvement or work",
+    ),
 ) -> None:
     """
     新しい run を作成する。日付プレフィックスがなければ今日の日付を自動付与する。
@@ -418,7 +435,7 @@ def start_run_cmd(
         )
         raise typer.Exit(1)
 
-    run_dir = settings.runs_dir / run_name
+    run_dir = repo.get_run_dir(run_name, taxonomy=taxonomy)
 
     # --dry-run: テンプレートのファイル一覧を表示して終了
     if dry_run:
@@ -430,11 +447,12 @@ def start_run_cmd(
                     typer.echo(f"  {f.name}")
         else:
             typer.echo("  [WARN] Template directory not found")
-        typer.echo(f"\nRun `apsf start-run {run_name}` to create.")
+        taxonomy_arg = f" --taxonomy {taxonomy}" if taxonomy else ""
+        typer.echo(f"\nRun `apsf start-run {run_name}{taxonomy_arg}` to create.")
         return
 
     try:
-        created_dir = repo.init_run(run_name, force=force)
+        created_dir = repo.init_run(run_name, force=force, taxonomy=taxonomy)
 
         typer.echo(f"[OK] Run created: {created_dir}")
         typer.echo("\nGenerated files:")
@@ -466,9 +484,11 @@ def next_cmd(
     from ..config.settings import get_settings
     from ..orchestration.phase_detector import PhaseDetector
     from ..orchestration.next_instruction_builder import NextInstructionBuilder
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
-    run_dir = settings.runs_dir / run_name
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
 
     if not run_dir.exists():
         typer.echo(f"[ERROR] Run not found: {run_dir}", err=True)
@@ -520,9 +540,11 @@ def transcript_cmd(
     """
     from ..config.settings import get_settings
     from ..orchestration.transcript_generator import TranscriptGenerator
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
-    run_dir = settings.runs_dir / run_name
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
 
     if not run_dir.exists():
         typer.echo(f"[ERROR] Run not found: {run_dir}", err=True)
@@ -614,10 +636,12 @@ def write_phase_cmd(
     from ..config.settings import get_settings
     from ..orchestration.next_instruction_builder import NextInstructionBuilder
     from ..orchestration.phase_detector import Phase, PhaseDetector
+    from ..storage.run_repository import RunRepository
     from .io import read_stdin_utf8
 
     settings = get_settings()
-    run_dir = settings.runs_dir / run_name
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
 
     if not run_dir.exists():
         typer.echo(f"[Error] Run not found: {run_dir}", err=True)
@@ -740,6 +764,129 @@ def write_phase_cmd(
     typer.echo(sep, err=True)
 
 
+@app.command("generate-setup")
+def generate_setup_cmd(
+    run_name: str = typer.Argument(..., help="Run name"),
+    print_prompt: bool = typer.Option(
+        False, "--print-prompt",
+        help="Print the generation prompt only to stdout (for pipe use)",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show what would be written without saving (no API key needed)",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Overwrite execution-assignment.md even if it already has content",
+    ),
+) -> None:
+    """
+    goal.md を読んで execution-assignment.md を自動生成する。
+
+    goal.md が記入済みで execution-assignment.md が未記入の場合のみ実行する。
+    HUMAN_OWNED_PHASES は変更しない。apsf act は引き続き SETUP_NEEDED で停止する。
+
+    使用例 (API あり):
+      apsf generate-setup <run>                # API で自動生成・保存
+      apsf generate-setup <run> --force        # 既存コンテンツを上書き
+
+    使用例 (API なし / dogfood):
+      apsf generate-setup <run> --print-prompt # プロンプトのみ stdout 出力
+      apsf generate-setup <run> --dry-run      # 保存なし（確認のみ）
+
+    パイプ連携:
+      apsf generate-setup <run> --print-prompt | claude | apsf write-phase <run> --stdin
+    """
+    from ..config.settings import get_settings
+    from ..orchestration.act_service import ActError, ActService
+    from ..orchestration.phase_detector import Phase, PhaseDetector
+    from ..prompts.renderer import render_setup_prompt
+    from ..providers.base import GenerateRequest, ProviderError
+    from ..storage.run_repository import RunRepository
+
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
+
+    if not run_dir.exists():
+        typer.echo(f"[Error] Run not found: {run_dir}", err=True)
+        raise typer.Exit(1)
+
+    detector = PhaseDetector(run_dir)
+
+    # goal.md が未記入なら停止（Human が先に書く必要がある）
+    if not detector._is_filled("goal.md"):
+        typer.echo(
+            "[Error] goal.md must be filled before generating setup.\n"
+            f"   Path: {run_dir / 'goal.md'}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # execution-assignment.md が記入済みなら上書き保護
+    if not force and detector._has_any_content("execution-assignment.md"):
+        typer.echo(
+            "[Info] execution-assignment.md already has content. Use --force to overwrite.\n"
+            f"   Path: {run_dir / 'execution-assignment.md'}",
+            err=True,
+        )
+        raise typer.Exit(0)
+
+    goal_content = (run_dir / "goal.md").read_text(encoding="utf-8")
+    prompt = render_setup_prompt(goal_content)
+
+    # --print-prompt: プロンプトのみ stdout 出力して終了
+    if print_prompt:
+        typer.echo(prompt)
+        raise typer.Exit(0)
+
+    sep = "=" * 60
+    typer.echo(sep, err=True)
+    typer.echo(f"Run  : {run_name}", err=True)
+    typer.echo(f"Phase: SETUP_NEEDED", err=True)
+    typer.echo(f"Write: execution-assignment.md", err=True)
+    typer.echo(sep, err=True)
+
+    # --dry-run: 保存なし
+    if dry_run:
+        typer.echo(f"\n[DRY-RUN] Would generate: execution-assignment.md")
+        typer.echo(f"\n--- Prompt ---")
+        typer.echo(prompt)
+        raise typer.Exit(0)
+
+    # Provider 取得（ActService._get_provider を PLAN_NEEDED phase 経由で呼ぶ。
+    # _PHASE_TO_ROLE[PLAN_NEEDED] = Role.PLANNER なので model-assignment.md の
+    # Planner 設定が参照される）
+    service = ActService()
+    try:
+        provider = service._get_provider(Phase.PLAN_NEEDED, run_dir, settings)
+    except ActError as exc:
+        typer.echo(f"[Error] {exc}", err=True)
+        raise typer.Exit(1)
+
+    # LLM 実行
+    try:
+        response = provider.generate(GenerateRequest(prompt=prompt))
+    except ProviderError as exc:
+        typer.echo(f"[Error] LLM generation failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    content = response.content.strip()
+    if not PhaseDetector.is_meaningful_text(content):
+        typer.echo(
+            "[Error] LLM returned empty or template-only content. Nothing saved.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    target_path = run_dir / "execution-assignment.md"
+    target_path.write_text(content, encoding="utf-8")
+
+    typer.echo(f"\n[Saved] execution-assignment.md")
+    typer.echo(f"  Path : {target_path}")
+    typer.echo(f"[Next]  apsf act {run_name}")
+
+
 @app.command("act")
 def act_cmd(
     run_name: str = typer.Argument(..., help="Run name"),
@@ -754,6 +901,10 @@ def act_cmd(
     print_prompt: bool = typer.Option(
         False, "--print-prompt",
         help="Print the generation prompt only to stdout (for Claude Code / Codex CLI / pipe)",
+    ),
+    executor: Optional[str] = typer.Option(
+        None, "--executor",
+        help="Executor for the phase. 'claude-cli' pipes prompt through claude CLI subprocess.",
     ),
 ) -> None:
     """
@@ -780,13 +931,66 @@ def act_cmd(
     """
     from ..config.settings import get_settings
     from ..orchestration.act_service import ActError, ActService
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
-    run_dir = settings.runs_dir / run_name
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
 
     if not run_dir.exists():
         typer.echo(f"[Error] Run not found: {run_dir}", err=True)
         raise typer.Exit(1)
+
+    # ── --executor claude-cli: subprocess パイプで claude CLI 経由実行 ────────
+    if executor == "claude-cli":
+        import shutil as _shutil
+        import subprocess
+
+        if not _shutil.which("claude"):
+            typer.echo(
+                "[Error] 'claude' not found in PATH. Install Claude Code CLI.",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        typer.echo("[1/3] generate prompt...", err=True)
+        prompt_result = subprocess.run(
+            ["apsf", "act", run_name, "--print-prompt"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if prompt_result.returncode != 0:
+            typer.echo(
+                f"[FAIL] apsf act --print-prompt (exit={prompt_result.returncode})",
+                err=True,
+            )
+            raise typer.Exit(prompt_result.returncode)
+
+        typer.echo("[2/3] invoke claude -p...", err=True)
+        claude_result = subprocess.run(
+            ["claude", "-p", "--no-tools"],
+            input=prompt_result.stdout,
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if claude_result.stderr:
+            typer.echo(claude_result.stderr, err=True)
+        if claude_result.returncode != 0:
+            typer.echo(
+                f"[FAIL] claude -p (exit={claude_result.returncode})",
+                err=True,
+            )
+            raise typer.Exit(claude_result.returncode)
+
+        typer.echo("[3/3] write phase...", err=True)
+        write_result = subprocess.run(
+            ["apsf", "write-phase", run_name, "--stdin"],
+            input=claude_result.stdout,
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if write_result.stdout:
+            typer.echo(write_result.stdout)
+        if write_result.stderr:
+            typer.echo(write_result.stderr, err=True)
+        raise typer.Exit(write_result.returncode)
 
     # --print-prompt / --dry-run はいずれも LLM を呼ばない
     resolve_dry = dry_run or print_prompt
