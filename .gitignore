@@ -61,3 +61,11 @@ runs/*/
 # README.md は追跡対象。作業ファイルは除外
 workspaces/*/*
 !workspaces/*/README.md
+
+# ----- Local temp / scratch ---------------------------------
+.tmp/
+tmp*/
+.pytest-tmp/
+.pytest-tmp*/
+.pytest_tmp/
+viewer.db
