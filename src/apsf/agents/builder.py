@@ -28,6 +28,7 @@ class BuilderAgent(BaseAgent):
         plan_path = context.run_dir / "plan.md"
         handoff_path = context.run_dir / "handoff.md"
         draft_path = context.run_dir / "build_draft.md"
+        build_review_path = context.run_dir / "build_review.md"
         build_path = context.run_dir / "build.md"
 
         plan_content = self._read_file(plan_path)
@@ -38,13 +39,14 @@ class BuilderAgent(BaseAgent):
             plan_content=plan_content,
             handoff_content=self._read_file(handoff_path),
             draft_content=self._read_file(draft_path),
+            build_review_content=self._read_file(build_review_path),
         )
         workspace = context.run_dir.parent.parent / "workspaces" / "builder"
 
         request = ExecuteRequest(
             prompt=prompt,
             system=BUILDER_SYSTEM,
-            input_files=[plan_path, handoff_path],
+            input_files=[plan_path, handoff_path, build_review_path],
             working_dir=workspace if workspace.exists() else None,
         )
 
@@ -74,6 +76,8 @@ class BuilderAgent(BaseAgent):
 BUILDER_SYSTEM = """\
 You are the Builder. Implement the deliverable based on the Plan.
 If a JuniorBuilder draft exists, use it as reference — judge, integrate, improve.
+If build_review.md exists, treat it as structured rebuild feedback.
 Record all decisions in build.md. Note deviations from Plan.
+Keep build.md as a build record, not as a dump of the full deliverable.
 This is the high-value step. Focus on quality.
 """

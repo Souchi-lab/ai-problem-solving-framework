@@ -6,6 +6,32 @@
 
 ---
 
+## Goal Readiness Check
+
+<!-- Planner が goal.md の planning readiness を確認する。
+     goal review ではなく、planning を阻害する構造的問題の限定チェック。
+     goal.md の文体・優先度・目標の再定義はスコープ外。 -->
+
+### チェック実施
+
+| チェック項目 | チェック通過 | 備考 |
+|---|---|---|
+| スコープ（何を作るか）が 1 つに絞れるか | ○ / ✗ |  |
+| plan が依存する前提が goal.md に記載されているか | ○ / ✗ |  |
+| Success Criteria が存在し相互矛盾していないか | ○ / ✗ |  |
+| blocking 依存関係が明示されているか | ○ / ✗ |  |
+
+### 判定
+
+- [ ] **Proceed** — 問題なし。plan 作成を続ける。
+- [ ] **Proceed with assumptions** — 軽微な曖昧さあり。仮定を下記に明記し、plan を続ける。<!-- 仮定は plan.md 末尾の ## Assumptions & Open Questions にも転記すること -->
+  - 仮定:
+- [ ] **Blocked** — 重大な欠如 / 矛盾あり。plan 作成を中断し Human に差し戻す。
+  - 根拠:
+  - Human への依頼: goal.md の〔該当箇所〕を〔どう直すべきか〕修正し、PLAN_NEEDED に戻してください。
+
+---
+
 ## Problem Structure
 
 -
@@ -46,8 +72,6 @@
 
 <!-- build に進む前に Planner が自己チェックする -->
 <!-- 3 項目以下しか ✅ にならない場合は、設計 run を追加することを検討する -->
-<!-- 注: framework/templates/plan.md では Build / Execute Policy の直前に配置。-->
-<!-- この _template は簡易版のため Execution Plan の直前に配置している -->
 
 - [ ] API / data shape が確定している（build 中に新たに設計しない）
 - [ ] 変更対象ファイル・箇所を列挙できる

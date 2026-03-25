@@ -15,6 +15,7 @@ CliRunner を使って Typer コマンドを直接呼び出す。
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -153,6 +154,49 @@ class TestActAutoGeneration:
         assert (run_dir / "plan.md").exists()
         saved = (run_dir / "plan.md").read_text(encoding="utf-8")
         assert _MOCK_CONTENT in saved
+
+    def test_plan_prompt_includes_specialist_guidance_when_assignment_has_ptype(self, tmp_path: Path) -> None:
+        _setup_env(tmp_path)
+        planners_dir = tmp_path / "framework" / "agents" / "planners"
+        planners_dir.mkdir(parents=True)
+        (planners_dir / "bugfix-planner.md").write_text(
+            "# Specialist: P-02 Bug Fix Planner\n\nBug-fix emphasis.\n",
+            encoding="utf-8",
+        )
+
+        run_dir = _create_run(tmp_path, self.RUN)
+        (run_dir / "execution-assignment.md").write_text(
+            "# Execution Assignment\n\n"
+            "## Run Name\n\n`test-run`\n\n"
+            "## Role Execution Assignments\n\n"
+            "Planner: cli  Builder: cli  Critic: human  Judge: human\n\n"
+            "## Planner Specialist\n\n"
+            "- Primary P-TYPE: P-02 Bug Fix\n"
+            "- Specialist Path: framework/agents/planners/bugfix-planner.md\n",
+            encoding="utf-8",
+        )
+        _fill_file(run_dir, "goal.md")
+
+        captured = {}
+
+        class _CapturingProvider:
+            @property
+            def provider_name(self) -> str:
+                return "mock"
+
+            def generate(self, request):
+                captured["prompt"] = request.prompt
+                return _MOCK_RESPONSE
+
+        with patch(
+            "apsf.orchestration.act_service.ActService._get_provider",
+            return_value=_CapturingProvider(),
+        ):
+            result = _invoke_act(tmp_path, self.RUN)
+
+        assert result.exit_code == 0, result.output
+        assert "Planner Specialist Guidance" in captured["prompt"]
+        assert "Bug-fix emphasis." in captured["prompt"]
 
     def test_build_auto_generated(self, tmp_path: Path) -> None:
         """plan.md 充填済み、build.md 未充填 → build.md を自動生成する。"""
@@ -306,6 +350,42 @@ class TestActPrintPrompt:
         result = _invoke_act(tmp_path, self.RUN, ["--print-prompt"])
 
         assert result.exit_code == 0, result.output
+
+
+class TestActClaudeCliExecutor:
+    RUN = "2099-01-01_test-case_act-claude-cli"
+
+    def test_claude_cli_timeout_exits_without_writing(self, tmp_path: Path, monkeypatch) -> None:
+        """--executor claude-cli で claude -p が timeout したら明示的に止まる。"""
+        _setup_env(tmp_path)
+        run_dir = _create_run(tmp_path, self.RUN)
+        _fill_file(run_dir, "execution-assignment.md")
+        _fill_file(run_dir, "goal.md")
+
+        monkeypatch.setenv("APSF_ROOT", str(tmp_path))
+        monkeypatch.setenv("APSF_CLAUDE_TIMEOUT_SEC", "30")
+
+        class _Completed:
+            def __init__(self, returncode=0, stdout="", stderr=""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        def _fake_run(cmd, *args, **kwargs):
+            if cmd[:3] == ["apsf", "act", self.RUN]:
+                return _Completed(returncode=0, stdout="# Plan\n\nPrompt body\n")
+            if cmd[:2] == ["claude", "-p"]:
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=30)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr("shutil.which", lambda name: "claude" if name == "claude" else None)
+        monkeypatch.setattr("subprocess.run", _fake_run)
+
+        result = runner.invoke(app, ["act", self.RUN, "--executor", "claude-cli"])
+
+        assert result.exit_code == 124, result.output
+        assert "timed out" in result.output.lower()
+        assert not (run_dir / "plan.md").exists()
 
 
 # ---------------------------------------------------------------------------

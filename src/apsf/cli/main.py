@@ -23,6 +23,8 @@ CLI - APSF コマンドラインインターフェース（v0.1: CLI/Human 前�
 
 from __future__ import annotations
 
+import os
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -50,6 +52,62 @@ def _ensure_utf8_output() -> None:
 
 _ensure_utf8_output()
 
+
+_TRANSPORT_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"\[APSF\]|\[Step \d+/\d+\]|\[Done\]|\[Note\]|\[FAIL\]|\[Error\]|\[Warn\]|"
+    r"Do you want to allow|Allow this action|Permission required|Approval required"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_phase_input(text: str) -> str:
+    """
+    LLM/CLI 出力に混ざる transport text を phase file 保存前に軽く正規化する。
+
+    目的:
+    - `claude -p` 由来の permission / status テキストが phase file に混入しないようにする
+    - 先頭に混ざった wrapper/log 行を落として、実際の Markdown 本文から保存する
+
+    方針:
+    - 先頭側のみを対象にする
+    - 最初の Markdown heading (`# ...`) が見つかったら、それ以前は落とす
+    - それまでの行に transport 系ログがあれば落とす
+    """
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+
+    first_heading_index: int | None = None
+    for idx, line in enumerate(lines):
+        if re.match(r"^\s*#\s+\S", line):
+            first_heading_index = idx
+            break
+
+    if first_heading_index is not None and any(line.strip() for line in lines[:first_heading_index]):
+        lines = lines[first_heading_index:]
+
+    while lines:
+        s = lines[0].strip()
+        if not s:
+            lines.pop(0)
+            continue
+        if _TRANSPORT_LINE_RE.match(s):
+            lines.pop(0)
+            continue
+        break
+
+    return "\n".join(lines).strip() + ("\n" if lines else "")
+
+
+def _get_claude_timeout_sec() -> int:
+    raw = os.environ.get("APSF_CLAUDE_TIMEOUT_SEC", "300")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 300
+    return max(30, value)
+
 app = typer.Typer(
     name="apsf",
     help="AI Problem Solving Framework - CLI/Human-first, multi-model problem solving OS",
@@ -59,7 +117,9 @@ app = typer.Typer(
 
 @app.command("init-run")
 def init_run(
-    run_name: str = typer.Argument(..., help="Run name: YYYY-MM-DD_case-key_topic"),
+    run_name: str = typer.Argument(
+        ..., help="Run name: YYYY-MM-DD_case-key_topic or YYYY-MM-DD-NNN_case-key_topic"
+    ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite if exists"),
     taxonomy: str | None = typer.Option(
         None,
@@ -77,8 +137,8 @@ def init_run(
     if not repo.validate_run_name(run_name):
         typer.echo(
             f"[ERROR] Invalid run name: '{run_name}'\n"
-            "   Expected: YYYY-MM-DD_case-key_topic\n"
-            "   Example:  2026-03-15_sochi-blocks_sns-post-template",
+            "   Expected: YYYY-MM-DD_case-key_topic or YYYY-MM-DD-NNN_case-key_topic\n"
+            "   Example:  2026-03-15-001_sochi-blocks_sns-post-template",
             err=True,
         )
         raise typer.Exit(1)
@@ -88,8 +148,9 @@ def init_run(
         typer.echo(f"[OK] Run created: {run_dir}")
         typer.echo("\nNext steps:")
         typer.echo(f"  1. Edit {run_dir}/execution-assignment.md  <- how to execute each role")
-        typer.echo(f"  2. Edit {run_dir}/model-assignment.md      <- which model to use (optional)")
-        typer.echo(f"  3. Edit {run_dir}/goal.md                  <- what to solve")
+        typer.echo(f"  2. Edit {run_dir}/goal.md                  <- what to solve")
+        typer.echo("  3. If needed, create model-assignment.md from framework/templates/model-assignment.md")
+        typer.echo("     Use it when model choice is mandatory/recommended for the run.")
         typer.echo(f"  4. Run: apsf show-execution-plan {run_name}")
     except (FileExistsError, FileNotFoundError) as e:
         typer.echo(f"[ERROR] {e}", err=True)
@@ -297,8 +358,12 @@ def generate_transcript(
     source_files = [
         ("execution-assignment.md", "how to run"),
         ("goal.md",                 "what to solve"),
+        ("plan_review.md",          "optional re-plan feedback"),
+        ("build_review.md",         "optional re-build feedback"),
+        ("review_review.md",        "optional re-review feedback"),
+        ("improve_review.md",       "optional re-improve feedback"),
         ("plan.md",                 "how to approach"),
-        ("handoff.md",              "what was passed between roles"),
+        ("handoff.md",              "optional transfer context between roles"),
         ("build.md",                "what was made"),
         ("review.md",               "what was found"),
         ("improve.md",              "what was decided"),
@@ -317,8 +382,9 @@ def generate_transcript(
     missing = []
     for filename, description in source_files:
         path = run_dir / filename
-        status = "[OK]     " if path.exists() else "[MISSING]"
-        if not path.exists():
+        is_optional = filename in {"plan_review.md", "build_review.md", "review_review.md", "improve_review.md", "handoff.md"}
+        status = "[OK]     " if path.exists() else ("[OPTIONAL]" if is_optional else "[MISSING]")
+        if not path.exists() and not is_optional:
             missing.append(filename)
         typer.echo(f"  {status} {filename:<30} -- {description}")
 
@@ -351,10 +417,13 @@ def generate_transcript(
     sections = [
         ("Run Overview",          "execution-assignment.md",             "Execution table: role / tool / type"),
         ("Goal",                  "goal.md",                             "Goal Statement, Background, Success Criteria, Notes"),
-        ("Planning",              "plan.md + handoff.md",                "Problem Structure, Selected Approach, handoff summary"),
+        ("Planning",              "plan.md + optional handoff.md (+ plan_review.md if present)", "Problem Structure, Selected Approach, re-plan feedback, handoff summary when used"),
+        ("Build Feedback",        "build_review.md (optional)",          "Re-build requests, unresolved build gaps"),
+        ("Review Feedback",       "review_review.md (optional)",         "Re-review requests and reviewer corrections"),
+        ("Judge Feedback",        "improve_review.md (optional)",        "Re-improve requests and judgment clarifications"),
         ("Draft Generation",      "workspaces/junior_builder/",          "Number of drafts, categories, key decisions"),
-        ("Build",                 "build.md + handoff.md",               "What was built, decisions made, deviations"),
-        ("Review",                "review.md + handoff.md",              "Critical/Major/Minor count, overall assessment"),
+        ("Build",                 "build.md + optional handoff.md",      "What was built, decisions made, deviations"),
+        ("Review",                "review.md + optional handoff.md",     "Critical/Major/Minor count, overall assessment"),
         ("Judge Decision",        "improve.md",                          "Decision (adopt/revise/reject), reason, next scope"),
         ("Result",                "result.md",                           "Outcome, success criteria table, overall verdict"),
         ("Generalization Notes",  "result.md (Generalization section)",  "Key patterns, reusable insights"),
@@ -387,7 +456,11 @@ def generate_transcript(
 @app.command("start-run")
 def start_run_cmd(
     run_name: str = typer.Argument(
-        ..., help="Run name (date optional): case-key_topic or YYYY-MM-DD_case-key_topic"
+        ...,
+        help=(
+            "Run name (date optional): case-key_topic, "
+            "YYYY-MM-DD_case-key_topic, or YYYY-MM-DD-NNN_case-key_topic"
+        ),
     ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite if exists"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview without creating"),
@@ -402,7 +475,7 @@ def start_run_cmd(
 
     例:
         apsf start-run sochi-blocks_new-feature
-        # → 2026-03-17_sochi-blocks_new-feature として作成される
+        # → 2026-03-17-001_sochi-blocks_new-feature として作成される
 
         apsf start-run 2026-03-17_sochi-blocks_new-feature
         # → 日付そのまま使用
@@ -416,21 +489,30 @@ def start_run_cmd(
     from ..config.settings import get_settings
     from ..storage.run_repository import RunRepository
 
-    _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_")
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:-\d+)?_")
 
     if not _DATE_PREFIX_RE.match(run_name):
         today = date.today().strftime("%Y-%m-%d")
-        run_name = f"{today}_{run_name}"
+        if "_" not in run_name:
+            typer.echo(
+                f"[ERROR] Invalid run name: '{run_name}'\n"
+                "   Expected: case-key_topic when date is omitted\n"
+                "   Example:  apsf_start-run-sequential-naming",
+                err=True,
+            )
+            raise typer.Exit(1)
+        case_key, topic = run_name.split("_", 1)
+        seq = repo.next_run_seq(today, taxonomy=taxonomy)
+        run_name = repo.format_run_name(today, case_key, topic, seq=seq)
         typer.echo(f"[INFO] Date auto-prepended: {run_name}")
-
-    settings = get_settings()
-    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
 
     if not repo.validate_run_name(run_name):
         typer.echo(
             f"[ERROR] Invalid run name: '{run_name}'\n"
-            "   Expected: YYYY-MM-DD_case-key_topic\n"
-            "   Example:  2026-03-15_sochi-blocks_sns-post-template",
+            "   Expected: YYYY-MM-DD_case-key_topic or YYYY-MM-DD-NNN_case-key_topic\n"
+            "   Example:  2026-03-15-001_sochi-blocks_sns-post-template",
             err=True,
         )
         raise typer.Exit(1)
@@ -473,6 +555,7 @@ def start_run_cmd(
 def next_cmd(
     run_name: str = typer.Argument(..., help="Run name"),
     debug: bool = typer.Option(False, "--debug", help="Show phase detection details"),
+    phase_only: bool = typer.Option(False, "--phase-only", help="Print only the phase value (machine-readable)"),
 ) -> None:
     """
     run の現在フェーズを検出して、次ロールにそのまま渡せる指示を表示する。
@@ -495,6 +578,11 @@ def next_cmd(
         raise typer.Exit(1)
 
     info = PhaseDetector(run_dir).detect()
+
+    if phase_only:
+        typer.echo(info.phase.value)
+        raise typer.Exit(0)
+
     instruction = NextInstructionBuilder().build(info, run_name)
 
     sep = "=" * 60
@@ -678,6 +766,23 @@ def write_phase_cmd(
 
     target_path = run_dir / target_file
 
+    # ── Role-boundary guard (hard-stop) ──────────────────────────────────────
+    # write-phase is the final enforcement point for role-boundary rules.
+    # Infer the canonical role from the current phase and check against
+    # the ROLE_FORBIDDEN table in role_rules.py.
+    # Reference: framework/responsibility-matrix.md
+    from .role_rules import GuardSeverity, check_role_boundary, role_from_phase
+
+    _guard_role = role_from_phase(info.phase.value)
+    if _guard_role is not None:
+        _guard_v = check_role_boundary(_guard_role, target_file, force=force)
+        if _guard_v is not None:
+            typer.echo(_guard_v.message, err=True)
+            typer.echo(_guard_v.override_hint, err=True)
+            if _guard_v.severity == GuardSeverity.HARD_STOP:
+                raise typer.Exit(2)
+            # WARNING: log and continue
+
     # ── Instruction display ──────────────────────────────────────────────────
     # stdout: instruction テキスト（有用なコンテンツ → パイプ先 AI / ユーザーが読む）
     # stderr: "--- Instruction ---" ラベルなど UI メタデータ
@@ -744,7 +849,8 @@ def write_phase_cmd(
         typer.echo(f"    Unix   : Ctrl+D", err=True)
         typer.echo("", err=True)
 
-    content = read_stdin_utf8()
+    raw_content = read_stdin_utf8()
+    content = _sanitize_phase_input(raw_content)
 
     # ── Validation: empty / template-only input ──────────────────────────────
     if not PhaseDetector.is_meaningful_text(content):
@@ -884,7 +990,7 @@ def generate_setup_cmd(
 
     typer.echo(f"\n[Saved] execution-assignment.md")
     typer.echo(f"  Path : {target_path}")
-    typer.echo(f"[Next]  apsf act {run_name}")
+    typer.echo(f"[Next]  apsf next {run_name}", err=True)
 
 
 @app.command("act")
@@ -953,6 +1059,8 @@ def act_cmd(
             )
             raise typer.Exit(1)
 
+        timeout_sec = _get_claude_timeout_sec()
+
         typer.echo("[1/3] generate prompt...", err=True)
         prompt_result = subprocess.run(
             ["apsf", "act", run_name, "--print-prompt"],
@@ -966,11 +1074,25 @@ def act_cmd(
             raise typer.Exit(prompt_result.returncode)
 
         typer.echo("[2/3] invoke claude -p...", err=True)
-        claude_result = subprocess.run(
-            ["claude", "-p", "--no-tools"],
-            input=prompt_result.stdout,
-            capture_output=True, text=True, encoding="utf-8",
-        )
+        try:
+            claude_result = subprocess.run(
+                ["claude", "-p", "--no-tools"],
+                input=prompt_result.stdout,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired:
+            typer.echo(
+                f"[FAIL] claude -p timed out after {timeout_sec}s",
+                err=True,
+            )
+            typer.echo(
+                f"       Run remains unchanged. Check: apsf next {run_name}",
+                err=True,
+            )
+            raise typer.Exit(124)
         if claude_result.stderr:
             typer.echo(claude_result.stderr, err=True)
         if claude_result.returncode != 0:
@@ -994,6 +1116,25 @@ def act_cmd(
 
     # --print-prompt / --dry-run はいずれも LLM を呼ばない
     resolve_dry = dry_run or print_prompt
+
+    # ── Role-boundary preflight ───────────────────────────────────────────────
+    # Emit a warning before invoking the AI if the current phase/role would
+    # be writing a forbidden artifact. Hard-stops are enforced by write-phase;
+    # act emits a preflight warning to catch issues as early as possible.
+    if not resolve_dry:
+        from .role_rules import GuardSeverity, check_role_boundary, role_from_phase
+        from ..orchestration.phase_detector import PhaseDetector as _PreflightDetector
+
+        _pf_info = _PreflightDetector(run_dir).detect()
+        _pf_role = role_from_phase(_pf_info.phase.value)
+        if _pf_role is not None:
+            _pf_v = check_role_boundary(_pf_role, _pf_info.file_to_write, force=force)
+            if _pf_v is not None:
+                typer.echo(f"[Preflight] {_pf_v.message}", err=True)
+                typer.echo(_pf_v.override_hint, err=True)
+                if _pf_v.severity == GuardSeverity.HARD_STOP:
+                    raise typer.Exit(2)
+                # WARNING: log and continue
 
     sep = "=" * 60
 
@@ -1032,8 +1173,8 @@ def act_cmd(
             typer.echo(f"  --> Then: apsf act {run_name}")
 
     elif result.mode == "already_filled":
-        typer.echo(f"\n[Info] {result.stop_reason}")
-        typer.echo(f"       Use: apsf act {run_name} --force")
+        typer.echo(f"\n[Info] {result.stop_reason}", err=True)
+        typer.echo(f"       Use: apsf act {run_name} --force", err=True)
 
     elif result.mode == "auto":
         if result.files_read:
@@ -1083,6 +1224,104 @@ def check_env() -> None:
             "  For future-api executor: add keys to .env and run:\n"
             "    pip install 'apsf[api]'"
         )
+
+
+@app.command("view")
+def view_cmd(
+    port: int = typer.Option(8000, "--port", "-p", help="Port to run the viewer on"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind for the viewer"),
+) -> None:
+    """
+    APSF Viewer (軽量 GUI) を起動する。
+
+    ブラウザで runs/ ディレクトリの状態を可視化し、
+    次に何をすべきかを確認できます。
+    """
+    import webbrowser
+
+    import uvicorn
+
+    from ..viewer.api import app
+
+    url = f"http://{host}:{port}"
+    typer.echo(f"\n[OK] Starting APSF Viewer at {url}")
+    typer.echo("Press Ctrl+C to stop.")
+
+    # Try to open browser
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+    uvicorn.run(app, host=host, port=port)
+
+
+@app.command("build")
+def build_cmd(
+    run_name: str = typer.Argument(..., help="Run name"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview command without running"),
+) -> None:
+    """
+    BUILD_NEEDED フェーズ向けのビルド実行ガイドを表示する。
+
+    Builder は filesystem tool access が必要なため、apsf-claude-act.ps1 (tools disabled)
+    ではなく apsf-claude-build.ps1 を使う。
+
+    Phase Routing Table:
+      PLAN_NEEDED    → apsf act          → apsf-claude-act.ps1  (tools: disabled)
+      REVIEW_NEEDED  → apsf act          → apsf-claude-act.ps1  (tools: disabled)
+      BUILD_NEEDED   → apsf build        → apsf-claude-build.ps1 (tools: ENABLED)
+    """
+    from ..config.settings import get_settings
+    from ..orchestration.phase_detector import PhaseDetector
+    from ..storage.run_repository import RunRepository
+
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
+
+    if not run_dir.exists():
+        typer.echo(f"[ERROR] Run not found: {run_dir}", err=True)
+        raise typer.Exit(1)
+
+    info = PhaseDetector(run_dir).detect()
+    phase = info.phase.value
+
+    # Locate the build script
+    scripts_dir = settings.framework_root / "scripts"
+    build_script = scripts_dir / "apsf-claude-build.ps1"
+
+    sep = "=" * 60
+    typer.echo(f"\n{sep}")
+    typer.echo(f"Run   : {run_name}")
+    typer.echo(f"Phase : {phase}")
+    typer.echo(sep)
+
+    if phase != "BUILD_NEEDED":
+        typer.echo(f"\n[Warn] Phase is '{phase}', not BUILD_NEEDED.", err=True)
+        typer.echo(f"       Use 'apsf act {run_name}' for PLAN_NEEDED / REVIEW_NEEDED.", err=True)
+
+    typer.echo(f"\nBuilder requires filesystem tool access.")
+    typer.echo(f"Use the dedicated build script:\n")
+    typer.echo(f"  PowerShell:")
+    typer.echo(f"    $run = \"{run_name}\"")
+    typer.echo(f"    .\\scripts\\apsf-claude-build.ps1 $run")
+    typer.echo(f"")
+    typer.echo(f"  Dry-run (preview assembled prompt):")
+    typer.echo(f"    .\\scripts\\apsf-claude-build.ps1 $run -DryRun")
+    typer.echo(f"")
+
+    if not build_script.exists():
+        typer.echo(f"[Warn] Build script not found: {build_script}", err=True)
+    else:
+        typer.echo(f"Script: {build_script}")
+
+    typer.echo(f"\nFallback (direct claude with tools, interactive):")
+    typer.echo(f"  claude --tools Bash,Edit,Glob,Grep,Read,Write")
+    typer.echo(f"")
+    typer.echo(f"[Note] Builder writes files directly to disk.")
+    typer.echo(f"       build.md is an optional log artifact the Builder should also create.")
+    typer.echo(f"{sep}\n")
 
 
 if __name__ == "__main__":

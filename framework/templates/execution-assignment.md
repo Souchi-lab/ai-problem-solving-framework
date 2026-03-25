@@ -1,92 +1,92 @@
 # Execution Assignment
 
-<!-- 1 run の開始時に model-assignment.md と一緒に作成する -->
-<!-- 「どのモデルを使うか」ではなく「どうやって実行するか」を定義する -->
-<!-- execution type: cli / human / future-api -->
+<!-- APSF CONTRACT: one run has one execution-assignment.md -->
+<!-- Keep this file focused on execution ownership and role boundaries. -->
+<!-- Do not use this file as a long PM brief or tool manual. -->
 
 ---
 
 ## Run Name
 
-<!-- runs/ のフォルダ名 -->
+<!-- Folder name under runs/ -->
 
 ## Goal Summary
 
-<!-- goal.md から 1〜2 文で転記 -->
+<!-- Summarize goal.md in 1-3 lines -->
 
 ---
 
 ## Role Execution Assignments
 
+<!-- Keep the standard role table. -->
+<!-- Planner / Critic specialist tags are optional and belong in Notes only when relevant. -->
+
 | Role | Execution Type | Tool / Method | Workspace | Notes |
 |---|---|---|---|---|
-| Planner | human | 手動 | workspaces/planner/ | 人間推奨 |
-| JuniorBuilder | cli | gemini-cli | workspaces/junior_builder/ | |
-| Builder | cli | claude | workspaces/builder/ | 高付加価値工程 |
-| Critic | human / cli | ChatGPT / 手動 | workspaces/critic/ | Builder と別系統推奨 |
-| Judge | human | 手動 | workspaces/judge/ | 人間必須（v0.1） |
+| Planner | human | Human / Codex | workspaces/planner/ | Main planning responsibility and planning boundary |
+| JuniorBuilder | cli | gemini-cli | workspaces/junior_builder/ | Optional draft / low-risk support only if useful |
+| Builder | cli | claude / codex | workspaces/builder/ | Main implementation responsibility and build boundary |
+| Critic | human / cli | Human / Codex | workspaces/critic/ | Main review lens and acceptance concerns |
+| Judge | human | Human | workspaces/judge/ | Final accept / continue decision standard |
 
 ---
 
-## Workspace Mapping
+## Minimum Procedure
 
-<!-- どの workspace を使うか。不要な role は削除してよい -->
+<!-- Record only the durable core. The viewer already carries phase, actions, and recent execution state. -->
 
-```
-workspaces/planner/       ← plan.md の作成拠点
-workspaces/junior_builder/ ← 候補案の生成拠点
-workspaces/builder/        ← 成果物の生成拠点
-workspaces/critic/         ← review.md の作成拠点
-workspaces/judge/          ← 判断・result.md の記録拠点
-```
+### Planner
 
----
+1. Read `goal.md`
+2. Write `plan.md`
+3. Leave `handoff.md` only if the next role needs transfer context that canonical artifacts do not already carry
 
-## Command or Manual Procedure
+### Builder
 
-<!-- 各 role の実行手順を具体的に書く -->
+1. Read `plan.md`
+2. Implement the scoped work
+3. Write `build.md`
 
-### Planner（human）
-1. `goal.md` を読む
-2. ChatGPT / 自分で plan.md を作成する
-3. `runs/<run-name>/plan.md` に保存する
-4. `handoff.md` を更新して次の role に渡す
+### Critic
 
-### JuniorBuilder（cli）
-```bash
-cd workspaces/junior_builder/
-# plan.md を参照して候補案を生成する
-# 例: gemini-cli や ChatGPT CLI を使う
-```
+1. Read `plan.md` and `build.md`
+2. Review with the assigned lens
+3. Write `review.md`
 
-### Builder（cli）
-```bash
-cd workspaces/builder/
-# claude を起動し、plan.md + handoff.md を読ませて成果物を生成する
-```
+### Judge
 
-### Critic（human / cli）
-1. `build.md` と成果物を読む
-2. Critical / Major / Minor の観点でレビューする
-3. `review.md` に記録する
-
-### Judge（human）
-1. `review.md` を読む
-2. Goal の成功基準と照合して判断する
-3. `improve.md` または `result.md` を書く
+1. Read `review.md`
+2. Decide whether to continue or adopt
+3. Write `improve.md` or `result.md`
 
 ---
 
 ## Why This Execution Plan
 
-<!-- なぜこの実行手段にしたか -->
+<!-- Explain only why this role split is appropriate for this run. -->
 
--
+- 
 
 ---
 
 ## Operational Risks
 
-<!-- この実行計画で想定されるリスク -->
+<!-- Record only meaningful execution risks for this run. -->
 
 - [ ]
+
+---
+
+## Optional Specialist Notes
+
+### Planner Specialist
+
+- Primary P-TYPE:
+- Specialist Path:
+- Selection Basis:
+
+### Critic Specialist
+
+- Primary C-TYPE:
+- Specialist Path:
+- Selection Basis:

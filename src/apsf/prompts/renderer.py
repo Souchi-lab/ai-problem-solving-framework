@@ -26,28 +26,52 @@ def render_setup_prompt(goal_content: str) -> str:
         "You are a Planner. Create an execution-assignment.md based on the following Goal.\n\n"
         + _section("Goal", goal_content)
         + "---\n\n"
-        "Output format: Follow the execution-assignment.md template structure.\n"
+        "Output format: Return ONLY the raw Markdown content for execution-assignment.md.\n"
+        "Start immediately with '# Execution Assignment'. Do not include meta-commentary,\n"
+        "file paths, save locations, code fences, or explanatory text before or after the Markdown.\n"
+        "Do not use any tools. Respond directly with the Markdown content.\n"
+        "CRITICAL CONTRACT: You must strictly adhere to the APSF execution-assignment.md template structure.\n"
+        "Do NOT rename, add, or remove section headers. Under '## Role Execution Assignments',\n"
+        "the table MUST have exactly the columns: `| Role | Execution Type | Tool / Method | Workspace | Notes |`\n"
+        "and MUST include rows for exactly these 4 base roles: `Planner`, `Builder`, `Critic`, `Judge`.\n"
         "Include: Run Name, Goal Summary, Scope Definition (In Scope / Out of Scope table),\n"
         "Phase Discussion Points (L-1, L-2, ... format, minimum 2 items),\n"
-        "Role Execution Assignment table (Planner / Builder / Critic / Judge),\n"
-        "Deliverables table (filename / content / done criteria),\n"
+        "Deliverables table (Target / Output Type / Done Criteria),\n"
         "and Handoff Notes for Planner (recommended approach, caveats).\n"
     )
 
 
-def render_plan_prompt(goal_content: str) -> str:
+def render_plan_prompt(
+    goal_content: str,
+    specialist_content: str = "",
+    specialist_selection_note: str = "",
+    plan_review_content: str = "",
+) -> str:
     """
     Planner 向けプロンプト。
     goal.md の内容を受け取り、plan.md 生成指示を組み立てる。
     """
-    return (
-        "Please create a plan.md based on the following Goal.\n\n"
+    prompt = (
+        "Produce the final contents of plan.md as markdown text only, based on the following Goal.\n\n"
         + _section("Goal", goal_content)
-        + "---\n\n"
-        "Output format: Follow the plan.md template.\n"
-        "Include: Problem Structure, Hypotheses, Options (min 2), "
-        "Selected Approach with reasoning, Execution Plan.\n"
     )
+    if specialist_selection_note:
+        prompt += _section("Planner Specialist Selection", specialist_selection_note)
+    if specialist_content:
+        prompt += _section("Planner Specialist Guidance", specialist_content)
+    if plan_review_content:
+        prompt += _section("Plan Review Feedback", plan_review_content)
+    prompt += (
+        "---\n\n"
+        "Output format: Return ONLY the raw Markdown content for plan.md.\n"
+        "Start immediately with '# Plan'. Do not include meta-commentary, file paths, save locations,\n"
+        "code fences, or explanatory text before or after the Markdown.\n"
+        "If Plan Review Feedback is provided, reflect it in the revised plan.md while still returning the full final document.\n"
+        "Required sections: Goal Readiness Check, Problem Structure, Hypotheses,\n"
+        "Options (minimum 2), Selected Approach with reasoning,\n"
+        "Implementation Readiness, Execution Plan, Assumptions & Open Questions.\n"
+    )
+    return prompt
 
 
 def render_junior_build_prompt(plan_content: str, handoff_content: str = "") -> str:
@@ -74,6 +98,7 @@ def render_build_prompt(
     plan_content: str,
     handoff_content: str = "",
     draft_content: str = "",
+    build_review_content: str = "",
 ) -> str:
     """
     Builder 向けプロンプト。
@@ -85,11 +110,16 @@ def render_build_prompt(
     )
     if handoff_content:
         prompt += _section("Handoff", handoff_content)
+    if build_review_content:
+        prompt += _section("Build Review Feedback", build_review_content)
     if draft_content:
         prompt += _section("JuniorBuilder Draft (for reference)", draft_content)
     prompt += (
         "---\n\n"
-        "Output: The actual deliverable + build.md.\n"
+        "Output format: Return ONLY the raw Markdown content for build.md.\n"
+        "Start immediately with '# Build'. Do not include meta-commentary, code fences around the document, or explanatory text before or after the Markdown.\n"
+        "If Build Review Feedback is provided, reflect it in the revised build while still returning the full final document.\n"
+        "Do not dump the full deliverable into build.md. Put real implementation in real files and use build.md as the build record.\n"
         "build.md must include: What was built, Inputs received, "
         "Decisions made, Deviations from Plan, Open Issues.\n"
     )
@@ -100,6 +130,9 @@ def render_review_prompt(
     goal_content: str,
     build_content: str,
     handoff_content: str = "",
+    specialist_content: str = "",
+    specialist_selection_note: str = "",
+    review_review_content: str = "",
 ) -> str:
     """
     Critic 向けプロンプト。
@@ -113,9 +146,18 @@ def render_review_prompt(
     )
     if handoff_content:
         prompt += _section("Handoff from Builder", handoff_content)
+    if review_review_content:
+        prompt += _section("Re-review Feedback", review_review_content)
+    if specialist_selection_note:
+        prompt += _section("Critic Specialist Selection", specialist_selection_note)
+    if specialist_content:
+        prompt += _section("Critic Specialist Guidance", specialist_content)
     prompt += (
         "---\n\n"
         "Output format: Follow the review.md template.\n"
+        "Return ONLY the raw Markdown content for review.md.\n"
+        "Do not include meta-commentary, file paths, or explanatory text before or after the Markdown.\n"
+        "If Re-review Feedback is provided, address its requested revisions while still producing a full independent review.\n"
         "Provide specific, actionable improvement suggestions for each issue.\n"
     )
     return prompt

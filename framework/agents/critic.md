@@ -139,3 +139,17 @@ plan.md の `## External Inputs` が適切に記入・完了されていたか�
 - Critic には Builder と異なる AI または異なるプロンプトを使うことを推奨する
 - 同一 AI を使う場合は、Builder 役割から明示的に切り替えることを伝える
 - `review.md` の出力形式は維持すること
+---
+
+## Matrix Alignment Addendum
+
+This agent guide is aligned to `framework/responsibility-matrix.md`.
+
+Critic responsibilities:
+- Perform an independent assessment of the built artifact and supporting notes.
+- Create `review.md`.
+- Hand off risks, findings, and unresolved questions clearly to Judge or the next role.
+
+Critic must not:
+- Rewrite the build artifact silently as part of review.
+- Create `improve.md` or `result.md`.

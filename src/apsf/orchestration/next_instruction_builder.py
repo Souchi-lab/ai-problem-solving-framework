@@ -56,7 +56,17 @@ class NextInstructionBuilder:
             Phase.COMPLETE:               self._complete,
         }
         fn = _dispatch.get(info.phase, self._fallback)
-        return fn(info, run_name)
+        instruction = fn(info, run_name)
+        if (
+            info.phase == Phase.IMPROVE_NEEDED
+            and "framework/templates/handoff.md" not in instruction.detailed_instruction
+        ):
+            instruction.detailed_instruction += (
+                "\n\nOptional handoff path:\n"
+                "If the next role needs additional transfer context, create or update handoff.md "
+                "from framework/templates/handoff.md.\n"
+            )
+        return instruction
 
     # ------------------------------------------------------------------
     # Per-phase builders
@@ -81,7 +91,8 @@ class NextInstructionBuilder:
                 "- Critic の executor と使用ツール\n"
                 "- Judge は human 固定\n\n"
                 "## 2. model-assignment.md\n"
-                "各 role に使用するモデルを記録します（CLI 実行では参考情報）。\n\n"
+                "各 role に使用するモデルが run outcome に効くかを先に判断してください。\n"
+                "mandatory / recommended の run だけ framework/templates/model-assignment.md から作成して記録し、optional なら省略して構いません。\n\n"
                 "完了後: `apsf next " + (run_name or "<run-name>") + "` を再実行してください。"
             ),
         )
@@ -116,13 +127,14 @@ class NextInstructionBuilder:
             phase=info.phase,
             next_role=info.next_role,
             target_file=info.file_to_write,
-            short_instruction="Planner: read goal.md and write plan.md.",
+            short_instruction="Planner: read goal.md and any plan_review.md, then write plan.md.",
             detailed_instruction=(
                 "# Plan: plan.md\n\n"
                 "あなたは Planner です。\n\n"
                 "## 読むファイル\n"
                 "- goal.md -- Goal Statement / Background / Success Criteria\n"
-                "- execution-assignment.md -- 各 role の実行手段\n\n"
+                "- execution-assignment.md -- 各 role の実行手段\n"
+                "- plan_review.md -- 再プラン依頼がある場合のレビュー指摘\n\n"
                 "## 書くファイル\n"
                 "plan.md（テンプレート: framework/templates/plan.md）\n\n"
                 "## 記入項目\n"
@@ -132,14 +144,21 @@ class NextInstructionBuilder:
                 "4. **Quality Criteria**: Critic が評価に使う軸\n\n"
                 "## しないこと\n"
                 "- 成果物の生成（それは Builder の責務）\n"
-                "- goal.md の成功基準を変更すること\n\n"
+                "- goal.md の成功基準を変更すること\n"
+                "- plan_review.md がある場合に、その指摘を無視すること\n\n"
                 "## 完了後\n"
-                "handoff.md を更新して Builder に渡してください。\n"
-                "handoff.md には「何が決まったか」「何が未決か」「Builder がすること」を明記。"
+                "Builder に追加 transfer context が必要な場合だけ handoff.md を更新してください。\n"
+                "ファイルが無ければ framework/templates/handoff.md から作成してください。\n"
+                "書く場合は「何が決まったか」「何が未決か」「Builder が最初に確認すべきこと」を簡潔に記録。"
             ),
         )
 
     def _improve_plan(self, info: PhaseInfo, run_name: str) -> NextInstruction:
+        handoff_line = (
+            "- handoff.md -- 存在する場合だけ読む追加 transfer context\n"
+            if "handoff.md" in info.files_to_read
+            else ""
+        )
         return NextInstruction(
             phase=info.phase,
             next_role=info.next_role,
@@ -150,7 +169,7 @@ class NextInstructionBuilder:
                 "あなたは Judge です。\n\n"
                 "## 読むファイル\n"
                 "- review.md -- Critic の指摘（Critical / Major / Minor）\n"
-                "- handoff.md -- Critic からの引き継ぎ\n"
+                + handoff_line +
                 "- build.md -- 現状の成果物\n\n"
                 "## 書くファイル\n"
                 "improve-plan.md（テンプレート: framework/templates/improve-plan.md）\n\n"
@@ -169,17 +188,23 @@ class NextInstructionBuilder:
         )
 
     def _build(self, info: PhaseInfo, run_name: str) -> NextInstruction:
+        handoff_line = (
+            "- handoff.md -- 存在する場合だけ読む追加 transfer context\n"
+            if "handoff.md" in info.files_to_read
+            else ""
+        )
         return NextInstruction(
             phase=info.phase,
             next_role=info.next_role,
             target_file=info.file_to_write,
-            short_instruction="Builder: read plan.md and handoff.md, then write build.md.",
+            short_instruction="Builder: read plan.md, optional handoff.md, and any build_review.md, then write build.md.",
             detailed_instruction=(
                 "# Build: build.md\n\n"
                 "あなたは Builder です。\n\n"
                 "## 読むファイル\n"
                 "- plan.md -- Problem Structure / Selected Approach / Build Instructions\n"
-                "- handoff.md -- Planner からの引き継ぎ（決定事項・未決事項・指示）\n"
+                + handoff_line +
+                "- build_review.md -- 再build 時の修正依頼がある場合だけ読む補助文書\n"
                 "- execution-assignment.md -- あなたの executor / tool 設定\n\n"
                 "## 書くファイル\n"
                 "build.md（テンプレート: framework/templates/build.md）\n\n"
@@ -189,19 +214,27 @@ class NextInstructionBuilder:
                 "3. **Open Issues**: 未解決事項（Critic に判断を委ねるものを明記）\n\n"
                 "## しないこと\n"
                 "- 問題の再定義・plan の変更\n"
+                "- build_review.md の指摘を無視した再build\n"
+                "- 実コードや durable artifact を build.md に埋め込むこと\n"
                 "- Critic の評価を先取りした自己評価\n\n"
                 "## 完了後\n"
-                "handoff.md を更新して Critic に渡してください。\n"
-                "handoff.md には「何が完成したか」「何を重点評価してほしいか」「未決事項」を記載。"
+                "Critic に追加 transfer context が必要な場合だけ handoff.md を更新してください。\n"
+                "ファイルが無ければ framework/templates/handoff.md から作成してください。\n"
+                "書く場合は「何が完成したか」「何を重点評価してほしいか」「未決事項」を記載。"
             ),
         )
 
     def _review(self, info: PhaseInfo, run_name: str) -> NextInstruction:
+        handoff_line = (
+            "- handoff.md -- 存在する場合だけ読む追加 transfer context（重点評価箇所・未決事項）\n"
+            if "handoff.md" in info.files_to_read
+            else ""
+        )
         return NextInstruction(
             phase=info.phase,
             next_role=info.next_role,
             target_file=info.file_to_write,
-            short_instruction="Critic: evaluate build.md and classify findings as Critical/Major/Minor.",
+            short_instruction="Critic: evaluate build.md and any review_review.md, then classify findings as Critical/Major/Minor.",
             detailed_instruction=(
                 "# Review: review.md\n\n"
                 "あなたは Critic です。\n\n"
@@ -209,7 +242,8 @@ class NextInstructionBuilder:
                 "- build.md -- 評価対象の成果物\n"
                 "- plan.md -- 意図・設計方針（逸脱判定の基準）\n"
                 "- goal.md -- 成功基準（照合先）\n"
-                "- handoff.md -- Builder からの引き継ぎ（重点評価箇所・未決事項）\n\n"
+                + handoff_line +
+                "- review_review.md -- 再レビュー時だけ読む補助文書\n\n"
                 "## 書くファイル\n"
                 "review.md（テンプレート: framework/templates/review.md）\n\n"
                 "## 記入項目\n"
@@ -221,14 +255,22 @@ class NextInstructionBuilder:
                 "3. **Success Criteria Check**: goal.md の成功基準を 1 件ずつ照合\n\n"
                 "## 判断の閾値\n"
                 "- Critical / Major がゼロなら採用推奨\n"
-                "- Critical があれば必ず却下推奨\n\n"
+                "- Critical があれば必ず却下推奨\n"
+                "- review_review.md がある場合は、その Requested Revisions を無視しない\n"
+                "- ただし review_review.md は補助文書であり、review.md を置き換えない\n\n"
                 "## 完了後\n"
-                "handoff.md を更新して Judge に渡してください。\n"
+                "Judge に追加 transfer context が必要な場合だけ handoff.md を更新してください。\n"
+                "ファイルが無ければ framework/templates/handoff.md から作成してください。\n"
                 "採用推奨 / 修正後採用推奨 / 却下推奨 と理由を明記。"
             ),
         )
 
     def _judge(self, info: PhaseInfo, run_name: str) -> NextInstruction:
+        handoff_line = (
+            "- handoff.md -- 存在する場合だけ読む追加 transfer context\n"
+            if "handoff.md" in info.files_to_read
+            else ""
+        )
         return NextInstruction(
             phase=info.phase,
             next_role=info.next_role,
@@ -239,8 +281,9 @@ class NextInstructionBuilder:
                 "あなたは Judge です。\n\n"
                 "## 読むファイル\n"
                 "- review.md -- Critic の評価・指摘（Critical / Major / Minor）\n"
-                "- handoff.md -- Critic からの採用推奨・引き継ぎ\n"
-                "- build.md -- 実際の成果物（必要に応じて確認）\n\n"
+                + handoff_line +
+                "- build.md -- 実際の成果物（必要に応じて確認）\n"
+                "- improve_review.md -- 再improve 用の修正メモ（存在する場合のみ）\n\n"
                 "## 書くファイル\n"
                 "improve.md（テンプレート: framework/templates/improve.md）\n\n"
                 "## 記入項目\n"
@@ -251,6 +294,8 @@ class NextInstructionBuilder:
                 "- Critical なし + Major なし → 採用\n"
                 "- Critical なし + Major あり → 修正後採用（次 run で対応）\n"
                 "- Critical あり → 却下（再 Build）\n\n"
+                "improve_review.md がある場合は、その Requested Revisions を反映して improve.md を更新すること。\n"
+                "ただし improve_review.md は補助メモであり、canonical artifact は improve.md のままです。\n\n"
                 "## 完了後\n"
                 "採用 → result.md を記入して run を締める\n"
                 "修正後採用 → improve-plan.md を作成して再ループへ（v0.2）"
@@ -258,6 +303,11 @@ class NextInstructionBuilder:
         )
 
     def _verify(self, info: PhaseInfo, run_name: str) -> NextInstruction:
+        handoff_line = (
+            "- handoff.md -- 存在する場合だけ読む追加 transfer context\n\n"
+            if "handoff.md" in info.files_to_read
+            else "\n"
+        )
         return NextInstruction(
             phase=info.phase,
             next_role=info.next_role,
@@ -269,7 +319,7 @@ class NextInstructionBuilder:
                 "## 読むファイル\n"
                 "- improve-plan.md -- Done Criteria（照合先）\n"
                 "- build.md -- 検証対象の成果物\n"
-                "- handoff.md -- Builder からの引き継ぎ\n\n"
+                + handoff_line +
                 "## 書くファイル\n"
                 "verify.md（テンプレート: framework/templates/verify.md）\n\n"
                 "## 記入項目\n"

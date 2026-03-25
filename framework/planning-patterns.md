@@ -63,6 +63,7 @@ run-016 で導入した `Implementation Readiness` は pattern と切り離し�
 - Readiness Implications:
   - API / data shape を build 前に固定する。
   - 影響ファイルとテスト観点を列挙する。
+- Recommended Planner Tool: reasoning — 新機能設計は仕様確定・変更範囲判断・テスト設計を含む推論作業。具体ツールは run ごとに `model-assignment.md` で割り当てる。
 - APSF-specific Notes:
   - CLI 拡張や repository API 追加はこの型に当たりやすい。
 - Non-Examples / Boundary:
@@ -96,6 +97,7 @@ run-016 で導入した `Implementation Readiness` は pattern と切り離し�
 - Readiness Implications:
   - expected / actual を build 前に言語化する。
   - 修正対象を局所化する。
+- Recommended Planner Tool: code-gen または human — 再現条件特定と局所修正は定型寄りで code-gen が扱いやすい。ドメイン知識が必要なら人間も可。具体ツールは run ごとに `model-assignment.md` で割り当てる。
 - APSF-specific Notes:
   - `P-01` から分ける理由は readiness の中心が「新仕様」ではなく「再現と回帰」だから。
 - Non-Examples / Boundary:
@@ -128,6 +130,7 @@ run-016 で導入した `Implementation Readiness` は pattern と切り離し�
 - Readiness Implications:
   - 非目的を先に書く。
   - 外部仕様不変更の確認点を先に書く。
+- Recommended Planner Tool: reasoning または code-gen — 挙動維持境界の判断は推論寄り。機械的な構造整理は code-gen でも対応できる。具体ツールは run ごとに `model-assignment.md` で割り当てる。
 - APSF-specific Notes:
   - 既存 framework 資産の整理 run で使いやすい。
 - Non-Examples / Boundary:
@@ -161,6 +164,7 @@ run-016 で導入した `Implementation Readiness` は pattern と切り離し�
 - Readiness Implications:
   - 移行単位、legacy policy、fallback 順序を build 前に固定する。
   - 参照更新範囲を事前に列挙する。
+- Recommended Planner Tool: code-gen — inventory → move → update の工程は定型的でコード理解と生成が中心。具体ツールは run ごとに `model-assignment.md` で割り当てる。
 - APSF-specific Notes:
   - taxonomy filesystem や parent/child topology の物理移行はこの型。
 - Non-Examples / Boundary:
@@ -192,6 +196,7 @@ run-016 で導入した `Implementation Readiness` は pattern と切り離し�
 - Readiness Implications:
   - 変更対象文書と非対象文書を build 前に固定する。
   - 追記か置換かを明記する。
+- Recommended Planner Tool: human または code-gen — 反映作業は定型的。文書内容のドメイン知識が必要なら人間が向いている。具体ツールは run ごとに `model-assignment.md` で割り当てる。
 - APSF-specific Notes:
   - `framework/templates/*.md` と `runs/_template/*.md` の更新 run に多い。
 - Non-Examples / Boundary:
@@ -224,6 +229,7 @@ run-016 で導入した `Implementation Readiness` は pattern と切り離し�
 - Readiness Implications:
   - build で新しい設計論点を増やさない。
   - 実装 run に必要な決定事項を明示する。
+- Recommended Planner Tool: reasoning — 比較・判断・handoff 形成は推論力が最も活きる工程。具体ツールは run ごとに `model-assignment.md` で割り当てる。
 - APSF-specific Notes:
   - run-006 や taxonomy 設計系の run が典型。
 - Non-Examples / Boundary:
@@ -255,6 +261,7 @@ run-016 で導入した `Implementation Readiness` は pattern と切り離し�
   - handoff
 - Readiness Implications:
   - 評価軸、比較対象、粒度を build 前に明示する。
+- Recommended Planner Tool: human または reasoning — 内部資産の評価は人間判断が強み。AI はサマリ・論点整理で補助する形が有効。具体ツールは run ごとに `model-assignment.md` で割り当てる。
 - APSF-specific Notes:
   - retrospective run、legacy run inventory、run-audit はこの型に含める。
 - Non-Examples / Boundary:
@@ -288,6 +295,7 @@ run-016 で導入した `Implementation Readiness` は pattern と切り離し�
   - 次段階へ handoff
 - Readiness Implications:
   - 探索母集団、評価軸、shortlist 条件を build 前に固定する。
+- Recommended Planner Tool: reasoning — 外部知識の収集・評価軸設定・shortlist と除外理由の言語化は推論力が活きる。具体ツールは run ごとに `model-assignment.md` で割り当てる。
 - APSF-specific Notes:
   - APSF 固有の新設型。初版定義は暫定であり、実例追加に応じて見直す。
   - 有効なのは、独立した input narrowing / hypothesis shaping を成果物として持つ場合のみ。

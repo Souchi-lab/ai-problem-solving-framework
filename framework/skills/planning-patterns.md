@@ -46,6 +46,8 @@ goal.md の Goal Statement を読み、「今回の run は〇〇をする」を
 | P-07 Retrospective / Analysis | 「棚卸し」「振り返り」「inventory」「分析」「audit」「優先度整理」 |
 | P-08 Research / Discovery | 「候補を収集する」「探索して選定する」「外部知見を取り込む」「shortlist」 |
 
+> **Recommended Planner Tool（任意参照）**: P-TYPE が確定したら `framework/planning-patterns.md` の該当 P-TYPE の `Recommended Planner Tool` フィールドを確認できる。推奨は提示のみであり、Planner が自分の判断で別ツールを選んでよい。
+
 ### Step 3: Boundary で 1 型に確定する
 
 候補が 2 型残った場合、`framework/planning-patterns.md` の該当 P-TYPE の `Non-Examples / Boundary` を読んで 1 型に絞る。

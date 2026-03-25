@@ -109,7 +109,7 @@ apsf show-structure
 
 ```bash
 apsf start-run sochi-blocks_sns-post-template
-# → 日付が自動付与される: 2026-03-15_sochi-blocks_sns-post-template
+# → 日付+連番が自動付与される: 2026-03-15-001_sochi-blocks_sns-post-template
 ```
 
 ### 5. パイプ運用を使う場合は LLM CLI を用意する（オプション）
@@ -174,6 +174,55 @@ LLM CLI なしでも `apsf act <run> --print-prompt` でプロンプトを取得
 
 ---
 
+### ⚠️ Build & Re-build — BUILD_NEEDED フェーズは別スクリプト
+
+Builder は **ファイルへの実アクセス** が必要なため、PLAN/REVIEW に使う `apsf-claude-act.ps1`（tools: disabled）は BUILD_NEEDED に使えない。
+
+#### Phase Routing Table
+
+| Phase | コマンド | Tool Access | スクリプト |
+|---|---|---|---|
+| PLAN_NEEDED | `apsf act <run>` | **無効** | `apsf-claude-act.ps1` |
+| REVIEW_NEEDED | `apsf act <run>` | **無効** | `apsf-claude-act.ps1` |
+| BUILD_NEEDED | `apsf build <run>` | **有効** | `apsf-claude-build.ps1` |
+
+#### 基本的な使い方
+
+```powershell
+$run = "<run-name>"
+
+# 通常: plan.md + build_review.md（あれば）を自動収集して claude を起動
+.\scripts\apsf-claude-build.ps1 $run
+
+# プロンプト確認のみ（claude は起動しない）
+.\scripts\apsf-claude-build.ps1 $run -DryRun
+
+# カスタムプロンプトを使う場合
+.\scripts\apsf-claude-build.ps1 $run -PromptFile path\to\custom.md
+```
+
+#### Re-build（build_review.md がある場合）
+
+`build_review.md` が run ディレクトリにある場合、`apsf-claude-build.ps1` は自動的に
+plan.md に追記してから claude を起動する。別途指定不要。
+
+```
+runs/<run-name>/
+  plan.md           ← 必須（Builder のメイン入力）
+  build_review.md   ← オプション（Re-build 指示。存在すれば自動収集）
+```
+
+#### Fallback（直接 claude を使う場合）
+
+```powershell
+claude --tools Bash,Edit,Glob,Grep,Read,Write
+```
+
+詳細: [`framework/agents/builder.md`](framework/agents/builder.md)
+
+---
+
+
 ### 6. goal.md を書いてループを開始する
 
 ```
@@ -224,3 +273,26 @@ runs/2026-03-15_sochi-blocks_sns-post-template/
 - [マルチモデル運用モデル](framework/operating-model.md)
 - [SoChi BLOCKSケース](cases/sochi-blocks/README.md)
 - [最初の run 推薦](cases/sochi-blocks/goals.md)
+---
+
+## Responsibility Matrix Alignment
+
+`framework/responsibility-matrix.md` is the canonical source for
+phase / role / artifact boundaries.
+
+Read aligned docs in this order when details appear to conflict:
+1. `framework/responsibility-matrix.md`
+2. `framework/workflow/*.md`
+3. `framework/agents/*.md`
+4. `framework/templates/*.md`
+
+`framework/workflow/*.md`, `framework/agents/*.md`, and
+`framework/templates/*.md` are aligned derived docs. They do not replace the
+canonical definition in `framework/responsibility-matrix.md`.
+
+Alignment rules:
+- `self-check` is Builder-internal quality control, not a standalone phase.
+- Builder stops at build outputs, `build.md`, and `handoff.md`.
+- Critic owns `review.md`.
+- Judge or Human owns `improve.md` and `result.md`.
+- `handoff.md` is a transfer note, not a replacement for canonical phase artifacts.

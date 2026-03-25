@@ -7,6 +7,8 @@ CriticAgent — レビュー・問題指摘を担当する agent
 
 from __future__ import annotations
 
+from ..config.settings import get_settings
+from ..cli.specialist_registry import resolve_critic_specialist
 from ..domain.models import Role, RunContext, StepResult, ExecutionType
 from ..executors.base import BaseExecutor, ExecuteRequest
 from ..prompts.renderer import render_review_prompt
@@ -28,23 +30,43 @@ class CriticAgent(BaseAgent):
         goal_path = context.run_dir / "goal.md"
         build_path = context.run_dir / "build.md"
         handoff_path = context.run_dir / "handoff.md"
+        assignment_path = context.run_dir / "execution-assignment.md"
+        review_review_path = context.run_dir / "review_review.md"
         review_path = context.run_dir / "review.md"
 
+        goal_content = self._read_file(goal_path)
         build_content = self._read_file(build_path)
         if not build_content.strip():
             raise AgentError(f"build.md is empty or missing: {build_path}")
 
+        assignment_content = self._read_file(assignment_path)
+        framework_root = get_settings().framework_root
+        selection = resolve_critic_specialist(
+            goal_text=goal_content,
+            assignment_text=assignment_content,
+            framework_root=framework_root,
+        )
+        selection_note = (
+            f"- Mode: {selection.mode}\n"
+            f"- Selected C-TYPE: {selection.ptype or '(none)'}\n"
+            f"- Specialist Path: {selection.specialist_path.as_posix() if selection.specialist_path else '(none)'}\n"
+            f"- Reason: {selection.reason}\n"
+        )
+
         prompt = render_review_prompt(
-            goal_content=self._read_file(goal_path),
+            goal_content=goal_content,
             build_content=build_content,
             handoff_content=self._read_file(handoff_path),
+            specialist_content=selection.specialist_content,
+            specialist_selection_note=selection_note,
+            review_review_content=self._read_file(review_review_path),
         )
         workspace = context.run_dir.parent.parent / "workspaces" / "critic"
 
         request = ExecuteRequest(
             prompt=prompt,
             system=CRITIC_SYSTEM,
-            input_files=[goal_path, build_path],
+            input_files=[p for p in [goal_path, build_path, review_review_path] if p.exists()],
             working_dir=workspace if workspace.exists() else None,
         )
 

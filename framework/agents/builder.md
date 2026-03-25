@@ -10,6 +10,37 @@ Builder は「Plan を受け取り、実際の成果物を作る」エージェ�
 
 ---
 
+## ⚠️ Builder Invocation — IMPORTANT
+
+Builder は **ファイルシステムへの実アクセスが必要**なため、
+PLAN/REVIEW フェーズで使用する `apsf-claude-act.ps1`（tools: disabled）ではなく、
+**`apsf-claude-build.ps1`（tools: enabled）を使用すること**。
+
+### Phase Routing Table
+
+| Phase | Canonical Command | Tool Access | Script |
+|---|---|---|---|
+| PLAN_NEEDED | `apsf act <run>` | **Disabled** | `apsf-claude-act.ps1` |
+| REVIEW_NEEDED | `apsf act <run>` | **Disabled** | `apsf-claude-act.ps1` |
+| BUILD_NEEDED | `apsf build <run>` → | **ENABLED** | `apsf-claude-build.ps1` |
+
+### Canonical Build Command (PowerShell)
+
+```powershell
+$run = "<run-name>"
+.\scripts\apsf-claude-build.ps1 $run
+```
+
+### Fallback (direct claude, interactive)
+
+```
+claude --tools Bash,Edit,Glob,Grep,Read,Write
+```
+
+**Builder は `build.md` を直接Markdownとして返さず、ファイルをディスクに書く。**  
+`build.md` は Builder が必ず作成・更新しなければならない **Durable Core (永続的記録)** である。このファイルが適切に更新されない限り、Build フェーズは完了（SUCCESS）とはみなされない。
+
+
 ## 入力 / 出力
 
 | 項目 | 内容 |
@@ -142,3 +173,21 @@ plan.md 側でその許可条件が明記されている場合に限る。
 - ドメインによって Builder の能力要件は変わる（コーディングに強い AI / 文章生成に強い AI）
 - `build.md` の出力形式は維持すること
 - 成果物の形式はドメイン・Plan によって柔軟に変える
+---
+
+## Matrix Alignment Addendum
+
+This agent guide is aligned to `framework/responsibility-matrix.md`.
+
+Builder responsibilities:
+- Produce the assigned build outputs.
+- Record implementation details, decisions, and open issues in `build.md`.
+- Prepare `handoff.md` only when Critic or the next role needs transfer context beyond canonical artifacts.
+
+Builder must not:
+- Create `review.md`, `improve.md`, or `result.md`.
+- Collapse self-check into a substitute for independent review.
+
+Note:
+- Builder self-check is allowed inside Build as supporting quality control.
+- The canonical primary output of Build is the built artifact; `build.md` is the **mandatory durable build record** that serves as the source of truth for phase advancement. Optional `handoff.md` only adds transfer context when needed.

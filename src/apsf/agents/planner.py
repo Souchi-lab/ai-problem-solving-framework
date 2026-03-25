@@ -1,33 +1,25 @@
 """
-PlannerAgent — 問題分解・計画立案を担当する agent
-
-推奨 executor: HumanExecutor（人間 + AI の共同で品質が安定しやすい）
-推奨ツール: ChatGPT / Claude.ai ブラウザ / 手書き
+PlannerAgent - planner role implementation
 """
 
 from __future__ import annotations
 
-from ..domain.models import Role, RunContext, StepResult, ExecutionType
+from ..config.settings import get_settings
+from ..cli.specialist_registry import resolve_planner_specialist
+from ..domain.models import ExecutionType, Role, RunContext, StepResult
 from ..executors.base import BaseExecutor, ExecuteRequest
 from ..prompts.renderer import render_plan_prompt
 from .base import AgentError, BaseAgent
 
 
 class PlannerAgent(BaseAgent):
-    """
-    Planner role の実装。
-
-    goal.md を読み込み、plan.md の生成指示を executor に渡す。
-    HumanExecutor の場合は「何を書くべきか」の指示を出力する。
-    CLIExecutor の場合は CLI ツールに prompt を渡す。
-    """
-
     def __init__(self, executor: BaseExecutor):
         super().__init__(role=Role.PLANNER, executor=executor)
 
     def run(self, context: RunContext) -> StepResult:
-        """goal.md → plan.md 生成の指示または実行"""
         goal_path = context.run_dir / "goal.md"
+        assignment_path = context.run_dir / "execution-assignment.md"
+        plan_review_path = context.run_dir / "plan_review.md"
         plan_path = context.run_dir / "plan.md"
 
         goal_content = self._read_file(goal_path)
@@ -37,20 +29,41 @@ class PlannerAgent(BaseAgent):
                 "Please write goal.md before running Planner."
             )
 
-        prompt = render_plan_prompt(goal_content=goal_content)
+        assignment_content = self._read_file(assignment_path)
+        plan_review_content = self._read_file(plan_review_path)
+        framework_root = get_settings().framework_root
+        selection = resolve_planner_specialist(
+            goal_text=goal_content,
+            assignment_text=assignment_content,
+            framework_root=framework_root,
+        )
+        selection_note = (
+            f"- Mode: {selection.mode}\n"
+            f"- Selected P-TYPE: {selection.ptype or '(none)'}\n"
+            f"- Specialist Path: {selection.specialist_path.as_posix() if selection.specialist_path else '(none)'}\n"
+            f"- Reason: {selection.reason}\n"
+        )
+
+        prompt = render_plan_prompt(
+            goal_content=goal_content,
+            specialist_content=selection.specialist_content,
+            specialist_selection_note=selection_note,
+            plan_review_content=plan_review_content,
+        )
         workspace = context.run_dir.parent.parent / "workspaces" / "planner"
+        input_files = [goal_path, assignment_path]
+        if plan_review_path.exists():
+            input_files.append(plan_review_path)
 
         request = ExecuteRequest(
             prompt=prompt,
             system=PLANNER_SYSTEM,
-            input_files=[goal_path],
+            input_files=input_files,
             working_dir=workspace if workspace.exists() else None,
         )
 
         try:
             response = self.executor.execute(request)
-
-            # CLI / API executor が実際に内容を生成した場合はファイルに書く
             if (
                 response.success
                 and response.content
@@ -67,9 +80,7 @@ class PlannerAgent(BaseAgent):
                 notes=f"via {self.executor}",
             )
         except Exception as e:
-            return StepResult(
-                step="plan", role=self.role, success=False, error=str(e)
-            )
+            return StepResult(step="plan", role=self.role, success=False, error=str(e))
 
 
 PLANNER_SYSTEM = """\

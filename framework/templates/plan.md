@@ -4,6 +4,32 @@
 
 ---
 
+## Goal Readiness Check
+
+<!-- Planner が goal.md の planning readiness を確認する。
+     goal review ではなく、planning を阻害する構造的問題の限定チェック。
+     goal.md の文体・優先度・目標の再定義はスコープ外。 -->
+
+### チェック実施
+
+| チェック項目 | チェック通過 | 備考 |
+|---|---|---|
+| スコープ（何を作るか）が 1 つに絞れるか | ○ / ✗ |  |
+| plan が依存する前提が goal.md に記載されているか | ○ / ✗ |  |
+| Success Criteria が存在し相互矛盾していないか | ○ / ✗ |  |
+| blocking 依存関係が明示されているか | ○ / ✗ |  |
+
+### 判定
+
+- [ ] **Proceed** — 問題なし。plan 作成を続ける。
+- [ ] **Proceed with assumptions** — 軽微な曖昧さあり。仮定を下記に明記し、plan を続ける。<!-- 仮定は plan.md 末尾の ## Assumptions & Open Questions にも転記すること -->
+  - 仮定:
+- [ ] **Blocked** — 重大な欠如 / 矛盾あり。plan 作成を中断し Human に差し戻す。
+  - 根拠:
+  - Human への依頼: goal.md の〔該当箇所〕を〔どう直すべきか〕修正し、PLAN_NEEDED に戻してください。
+
+---
+
 ## Problem Structure
 
 <!-- この問題の本質は何か。どんなサブ問題に分解できるか -->
@@ -86,6 +112,8 @@
 - [ ] 外部観察結果が `research-input.md` または plan.md 付録に記録されている
 - [ ] Builder が外部入力を参照できる状態になっている
 
+---
+
 ## Implementation Readiness
 
 <!-- build に進む前に Planner が自己チェックする -->
@@ -96,6 +124,21 @@
 - [ ] 依存順が 3 段階以内で説明できる
 - [ ] 既存互換の保持点を 1 文で言える
 - [ ] 検証・スモークチェックの観点を build 前に言える
+
+### Satisfiability Classification
+
+<!-- Planner が goal.md の Success Criteria と plan 内の unresolved prerequisites を照合する。 -->
+<!-- この分類は phase を変えない。warning / explanation 用の additive signal として使う。 -->
+
+- Classification: `SATISFIED` / `EXPLORATORY` / `UNSATISFIED`
+- Rationale:
+- Required unresolved prerequisites (if any):
+
+Classification rule:
+
+- `SATISFIED`: Goal が execution-ready / verified output を要求していない、または required prerequisite が解消済み
+- `EXPLORATORY`: Goal が provisional / investigative output を明示的に許しており、未解決項目がその暫定スコープと整合している
+- `UNSATISFIED`: Goal が execution-ready / strictly verified output を要求しているのに、plan が required prerequisite を unresolved のまま残している
 
 **Open Questions（build 開始前に 0〜1 件であること）**:
 
@@ -120,19 +163,19 @@
 
 **Build 対象成果物**:
 
-- 
+-
 
 **Build に進んではいけない条件**:
 
-- 
+-
 
 **Build 後に実行 / publish へ進んでよい条件**:
 
-- 
+-
 
 **差し戻し条件（Planner に戻す条件）**:
 
-- 
+-
 
 ---
 
@@ -152,3 +195,15 @@
 
 - 前提:
 - 要確認:
+---
+
+## Alignment Note
+
+`framework/responsibility-matrix.md` is the canonical source for
+phase / role / artifact boundaries.
+
+Use `Build / Execute Policy` to state, explicitly:
+- whether Builder may proceed,
+- that Builder stops at Build,
+- and that Builder is forbidden from creating `review.md`,
+  `improve.md`, or `result.md`.

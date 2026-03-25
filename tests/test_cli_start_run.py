@@ -160,11 +160,24 @@ class TestDateAutoPrepend:
         result = _invoke_start_run(tmp_path, ["test-case_my-feature"])
         assert result.exit_code == 0
         assert "Date auto-prepended" in result.output
-        # 作成された run ディレクトリが YYYY-MM-DD_ で始まる
+        # 作成された run ディレクトリが YYYY-MM-DD-NNN_ で始まる
         runs_dir = tmp_path / "runs"
         created = [d for d in runs_dir.iterdir() if d.is_dir() and d.name != "_template"]
         assert len(created) == 1
-        assert re.match(r"^\d{4}-\d{2}-\d{2}_", created[0].name)
+        assert re.match(r"^\d{4}-\d{2}-\d{2}-\d{3}_", created[0].name)
+
+    def test_seq_increments_when_same_day_runs_repeat(self, tmp_path: Path) -> None:
+        _setup_env(tmp_path)
+        result1 = _invoke_start_run(tmp_path, ["test-case_first"])
+        result2 = _invoke_start_run(tmp_path, ["test-case_second"])
+        assert result1.exit_code == 0, result1.output
+        assert result2.exit_code == 0, result2.output
+
+        runs_dir = tmp_path / "runs"
+        created = sorted(d.name for d in runs_dir.iterdir() if d.is_dir() and d.name != "_template")
+        assert len(created) == 2
+        assert re.match(r"^\d{4}-\d{2}-\d{2}-001_test-case_first$", created[0])
+        assert re.match(r"^\d{4}-\d{2}-\d{2}-002_test-case_second$", created[1])
 
     def test_date_not_doubled_when_already_present(self, tmp_path: Path) -> None:
         _setup_env(tmp_path)

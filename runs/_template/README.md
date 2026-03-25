@@ -1,186 +1,220 @@
-# _template
+# Run Template
 
 ## run の始め方
 
 ```bash
 apsf init-run YYYY-MM-DD_case-key_topic
-# または手動で:
+
+# 手動で作る場合
 cp -r runs/_template runs/YYYY-MM-DD_case-key_topic
 ```
 
 ---
 
-## ファイルを埋める順番
+## ファイル構成
 
-**run 開始前に `execution-assignment.md` と `model-assignment.md` を作成すること。**
-「どうやって実行するか」と「どのモデルを使うか」を決めずに進めない。
+1 run は 1 つの problem solving cycle を表します。基本構成は次のとおりです。
 
-```
-0. execution-assignment.md  ← run 開始前：各 role の実行手段を決める（★ 最初に）
-   model-assignment.md      ← run 開始前：各 role のモデルを決める（CLI 実行では参考情報）
-1. goal.md              ← 何を解くかを明確にする（人間が書く）
-2. plan.md              ← Planner が作成
-3. handoff.md           ← Planner → Builder へ引き渡し（初回）
-4. build.md             ← Builder が作成
-5. handoff.md           ← Builder → Critic へ更新
-6. review.md            ← Critic が作成
-7. handoff.md           ← Critic → Judge へ更新
-8. improve.md           ← 人間（Judge）が判断
-9. result.md            ← ループ完了時に人間が作成
-──────────────────────────────────────────────────
-[補助] transcript.md   ← result.md 完了後に生成（optional / 初回 run では強く推奨）
+```text
+execution-assignment.md   run 全体の役割分担
+goal.md                   問題定義と成功条件
+plan.md                   Planner の方針整理
+plan_review.md            任意。再計画のための修正メモ
+build_review.md           任意。再build のための修正メモ
+review_review.md          任意。再review のための修正メモ
+improve_review.md         任意。再improve のための修正メモ
+build.md                  Builder の実装記録
+review.md                 Critic のレビュー
+improve.md                Judge の改善判断
+result.md                 最終結果
+transcript.md             任意。一次記録の可読化まとめ
 ```
 
----
+`plan_review.md` / `build_review.md` / `review_review.md` / `improve_review.md` は正式な補助文書ですが任意です。`plan.md` / `build.md` / `review.md` / `improve.md` を置き換えるものではなく、差し戻し時の補助メモとして使います。
 
-## execution-assignment.md について
+`execution-assignment.md` は default skeleton に含まれます。`model-assignment.md` / `handoff.md` は conditional artifact なので、default skeleton には含めません。必要になったら `framework/templates/` から作成してください。
 
-### いつ埋めるか
-
-**run を切る前（`apsf init-run` の直後）に記入する。**
-
-goal.md を書く前に実行手段を決めておくことで、
-「このステップは誰がどのツールで実行するか」を全員（と自分）が共有できる。
-
-### model-assignment.md との違い
-
-| ファイル | 問い | 主な用途 |
-|---|---|---|
-| `execution-assignment.md` | **どうやって実行するか** | cli / human / future-api の選択 |
-| `model-assignment.md` | **どのモデルを使うか** | OpenAI / Anthropic / Gemini の選択 |
-
-v0.1 では CLI / Human 実行が主体のため、`execution-assignment.md` が中心。
-`model-assignment.md` は将来 future-api executor を使う際の参考情報として残す。
-
-### handoff.md との関係
-
-`execution-assignment.md` は **run 全体の実行手段設定**（変わらない）。
-`handoff.md` は **ステップ間の受け渡し内容**（step ごとに更新する）。
-
-```
-execution-assignment.md  → 「Builder は claude CLI で実行する」という設定
-handoff.md               → 「Builder へ: plan.md のこの部分を重点的に」という指示
-```
-
-handoff.md を更新するタイミング:
-- Planner → Builder へ渡すとき
-- Builder → Critic へ渡すとき
-- Critic → Judge へ渡すとき
-
----
-
-## transcript.md について
-
-### 何か
-
-run 完了後に一次記録（goal.md 〜 result.md）を**役割別の発言形式で再構成した可読化文書**（二次成果物）。
-正式記録の置き換えではなく、読みやすさ・共有性・振り返り性を高めるための補助ファイル。
-逐語ログでも会話の再現でもない。正確な情報が必要な場合は必ず一次記録を参照すること。
-
-### いつ作るか
-
-**result.md を書いた後**。途中生成は事実が不完全になるため避ける。
-
-### 何を書くか
-
-以下の問いに会話形式で答える:
-- Planner は何を構造化したか（problem structure・品質基準・handoff 内容）
-- JuniorBuilder はどんな叩き台を出したか（該当する場合）
-- Builder は何を完成させたか（成果物・採用した判断・逸脱）
-- Critic は何を指摘したか（Critical / Major / Minor の要点）
-- Judge はどう決めたか（採用・修正・却下、その理由）
-- Result として何が一般化されたか（Generalization の要点）
-
-### どう書くか
-
-役割別の発話ブロックで記述する。各引き継ぎ（handoff）は引用ではなく要約で書く。
-
-```
-**Planner**: goal.md を読んで X・Y・Z を構造化した。採用アプローチは A。
-
-Planner から Builder への引き継ぎ要点:
-変数形式・トーン・カテゴリ分類を決定した。
-ハッシュタグ戦略は未解決のまま Builder に委ねた。
-
-**Builder**: A・B・C を作成した。Plan から逸脱した点は D（理由: E）。
-
-Builder から Critic への引き継ぎ要点:
-F の観点を重点的に評価してほしい。G は未検討のため Critic の判断に委ねた。
-
-**Critic**: Critical なし、Minor 2 点。G の点に改善余地あり（Low）。
-
-Critic から Judge への引き継ぎ要点:
-採用推奨。Minor 2 点は次 run での対応を提案。
-
-**Judge**: 採用。Minor は次 run で対応する。
-```
-
-**引用ブロック（>）を使うのは、元ファイルの原文を「そのまま」転記する場合のみ。**
-迷ったら引用より要約が安全。
-
-### 参照するファイル
-
-```
-execution-assignment.md / goal.md / plan.md / handoff.md /
-build.md / review.md / improve.md / result.md
-（必要に応じて workspaces/*/draft-*.md も参照）
-```
-
-### 生成方法
-
-**手動**:
-1. `transcript.md` のひな型を開く
-2. 各セクションを対応ファイルを参照しながら記述する
-3. 事実ベースで書く。元ファイルにない内容は書かない
-
-**CLI 補助**:
-```bash
-apsf generate-transcript <run-name>
-# 参照ファイル一覧と各セクションの記入ガイドを表示する
+```text
+framework/templates/model-assignment.md
+framework/templates/handoff.md
 ```
 
 ---
 
-## 各ファイルの参照先
+## 各ファイルの役割
 
-| ファイル | 原本テンプレート | 担当 | 種別 |
+### `execution-assignment.md`
+
+- run の役割分担を定義する
+- 各 role の責務境界だけを残す
+- 詳細な操作説明や長い手順書にはしない
+
+### `model-assignment.md`
+
+- default skeleton には含まれない
+- run 開始時に必須とは限らない
+- role ごとの model 方針が outcome や独立性に効くときに作る
+- provider / model と主要な理由だけを書く
+- 重要でないコスト説明や定型文は最小限でよい
+
+### `plan.md`
+
+- `goal.md` をもとに Planner が方針を整理する
+- 選択肢、採用理由、build 境界を書く
+- Builder がどこまで進んでよいかを明記する
+
+### `plan_review.md`
+
+- 任意の補助文書
+- Human / Critic / reviewer が Planner に再修正を依頼するときに使う
+- `PLAN_NEEDED` に戻して再計画するときの根拠を残す
+
+### `build_review.md`
+
+- 任意の補助文書
+- Human / Critic / reviewer が Builder に再修正を依頼するときに使う
+- `BUILD_NEEDED` に戻して再build するときの根拠を残す
+
+### `review_review.md`
+
+- 任意の補助文書
+- Human / Critic / reviewer が Critic に再修正を依頼するときに使う
+- `REVIEW_NEEDED` に戻して再review するときの根拠を残す
+
+### `improve_review.md`
+
+- 任意の補助文書
+- Human / Judge / reviewer が Judge に再修正を依頼するときに使う
+- `IMPROVE_NEEDED` に戻して再improve するときの根拠を残す
+
+### `handoff.md`
+
+- default skeleton には含まれない
+- role 間の受け渡しメモ
+- 常時必須ではない
+- `plan.md` / `build.md` / `review.md` の代替にはしない
+- 追加の transfer context がないなら最小限でよい
+- 次の role が最初に確認すべき点だけを優先する
+
+### `transcript.md`
+
+- 一次記録を役割別の発言形式で再構成した読み物
+- `result.md` 完了後に生成する
+- 任意だが初回 run では強く推奨
+
+---
+
+## 典型フロー
+
+```text
+Goal
+  -> Plan
+  -> Build
+  -> Review
+  -> Improve
+  -> Result
+```
+
+役割の受け渡しは、追加の transfer context が必要なときだけこうなります。
+
+```text
+Planner -> (handoff.md if needed) -> Builder
+Builder -> (handoff.md if needed) -> Critic
+Critic  -> (handoff.md if needed) -> Judge
+```
+
+### phase / 差し戻し artifact 対応
+
+| phase | canonical artifact | 差し戻し artifact | rerun script | 次の実行経路 |
+|---|---|---|---|---|
+| `PLAN_NEEDED` | `plan.md` | `plan_review.md` | `apsf-rerun-plan.ps1` | `.\scripts\apsf-claude-act.ps1 $run` |
+| `BUILD_NEEDED` | `build.md` | `build_review.md` | `apsf-rerun-build.ps1` | `apsf build $run` または `.\scripts\apsf-claude-build.ps1 $run` |
+| `REVIEW_NEEDED` | `review.md` | `review_review.md` | `apsf-rerun-review.ps1` | `.\scripts\apsf-claude-act.ps1 $run` |
+| `IMPROVE_NEEDED` | `improve.md` | `improve_review.md` | `apsf-rerun-improve.ps1` | `apsf next $run` を見て Human Judge が更新 |
+
+差し戻し artifact はすべて任意です。`plan.md` / `build.md` / `review.md` / `improve.md` の代わりではなく、再実行時の補助メモとして扱います。
+
+再計画が必要なときは次の流れを使います。
+
+```text
+reviewer / Human
+  -> plan_review.md
+  -> PLAN_NEEDED に戻す
+  -> Planner が plan.md を更新
+```
+
+再build が必要なときは次の流れを使います。
+
+```text
+reviewer / Human
+  -> build_review.md
+  -> BUILD_NEEDED に戻す
+  -> Builder が build.md を更新
+```
+
+`apsf-claude-build.ps1` が `Reached max turns` で止まった場合は、成功ではなく partial / incomplete として扱います。途中成果物が残ることはありますが、phase は自動で進めず、人間側が続行判断を行います。
+
+---
+
+## transcript の書き方
+
+`transcript.md` では、一次記録をそのまま貼るのではなく要約します。
+
+例:
+
+```text
+Planner: goal.md を読んで X・Y・Z を構造化した。採用アプローチは A。
+Plan Review: 必要なら plan_review.md に修正要求を残し、PLAN_NEEDED に戻して再計画する。
+Builder: A・B・C を実施した。未解決は D。
+Critic: Critical なし、Minor 2 件。次 run で対処可能。
+Judge: Minor のみなので採用。
+```
+
+---
+
+## 参照元テンプレート
+
+| ファイル | テンプレート | 主担当 | 種別 |
 |---|---|---|---|
-| `execution-assignment.md` | `framework/templates/execution-assignment.md` | 人間（run 開始前） | 一次記録 |
-| `model-assignment.md` | `framework/templates/model-assignment.md` | 人間（run 開始前） | 一次記録 |
+| `execution-assignment.md` | `framework/templates/execution-assignment.md` | 人間 | 一次記録 |
+| `model-assignment.md` | `framework/templates/model-assignment.md` | 人間 | 条件付きの一次記録 |
 | `goal.md` | `framework/templates/goal.md` | 人間 | 一次記録 |
 | `plan.md` | `framework/templates/plan.md` | Planner | 一次記録 |
-| `handoff.md` | `framework/templates/handoff.md` | 各 role が更新 | 一次記録 |
+| `plan_review.md` | `framework/templates/plan-review.md` | 人間 / Critic / reviewer | 任意の補助記録 |
+| `handoff.md` | `framework/templates/handoff.md` | 各 role | 条件付きの一次記録 |
+| `build_review.md` | `framework/templates/build-review.md` | 人間 / Critic / reviewer | 任意の補助記録 |
+| `review_review.md` | `framework/templates/review-review.md` | 人間 / Critic / reviewer | 任意の補助記録 |
+| `improve_review.md` | `framework/templates/improve-review.md` | 人間 / Judge / reviewer | 任意の補助記録 |
 | `build.md` | `framework/templates/build.md` | Builder | 一次記録 |
 | `review.md` | `framework/templates/review.md` | Critic | 一次記録 |
-| `improve.md` | `framework/templates/improve.md` | 人間 | 一次記録 |
+| `improve.md` | `framework/templates/improve.md` | Judge / 人間 | 一次記録 |
 | `result.md` | `framework/templates/result.md` | 人間 | 一次記録 |
-| `transcript.md` | `framework/templates/transcript.md` | 人間（or AI 補助） | **二次成果物** |
+| `transcript.md` | `framework/templates/transcript.md` | 人間 / tooling | 二次記録 |
 
 ---
 
-## framework/templates/ と runs/_template/ の違い
+## framework/templates と runs/_template の違い
 
-| パス | 役割 |
+| パス | 用途 |
 |---|---|
-| `framework/templates/` | **設計資産の原本**。仕様書。直接書き込まない。 |
-| `runs/_template/`（このフォルダ）| **run 開始時にコピーする用紙**。実際の記録はコピー先に書く。 |
+| `framework/templates/` | 設計上の正規テンプレート |
+| `runs/_template/` | 新しい run をコピーするときの雛形 |
+
+テンプレートの意味を変えるときは、まず `framework/templates/` を直し、その後必要に応じて `runs/_template/` に反映します。
 
 ---
 
-## チェックリスト（run 開始前）
+## run 開始時チェック
 
-> **パターン適用の判断**: `framework/pattern-application-checklist.md` を参照する（optional / Planner や run designer に有用）。
+- [ ] run 名が `YYYY-MM-DD_case-key_topic` 形式になっている
+- [ ] `execution-assignment.md` を書いた
+- [ ] `model-assignment.md` が mandatory / recommended / optional のどれか判断した
+- [ ] 必要なら `framework/templates/model-assignment.md` から `model-assignment.md` を作成した
+- [ ] `goal.md` の成功条件が明確
+- [ ] 必要なら `apsf dry-run <run-name>` を実行して role の流れを確認した
 
-- [ ] 命名規則に従っているか（`YYYY-MM-DD_case-key_topic`）
-- [ ] `cases/` 配下のケースの `context.md` / `goals.md` を確認したか
-- [ ] `execution-assignment.md` を作成したか（実行手段の決定）
-- [ ] `model-assignment.md` を作成したか
-- [ ] `goal.md` の成功基準が具体的・検証可能か
-- [ ] `apsf dry-run <run-name>` で role → executor マッピングを確認したか
+## run 完了時チェック
 
-## チェックリスト（run 完了時）
-
-- [ ] `result.md` を書いたか
-- [ ] `result.md` の **Generalization** と **Reusable Prompt** を書いたか
-- [ ] `runs/README.md` のテーブルに追記したか
-- [ ] `transcript.md` を生成したか（初回 run・重要 run では強く推奨）
+- [ ] `result.md` を書いた
+- [ ] `result.md` の `Generalization` と `Reusable Prompt` を書いた
+- [ ] 必要なら `transcript.md` を生成した

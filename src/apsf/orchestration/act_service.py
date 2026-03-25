@@ -25,6 +25,7 @@ from typing import Optional
 
 from ..config.settings import Settings, get_settings
 from ..domain.models import Role
+from ..cli.specialist_registry import resolve_critic_specialist, resolve_planner_specialist
 from ..orchestration.next_instruction_builder import NextInstructionBuilder
 from ..orchestration.phase_detector import (
     AUTO_OWNED_PHASES,
@@ -113,6 +114,7 @@ class ActService:
         """
         if settings is None:
             settings = get_settings()
+        self._settings = settings
 
         detector = PhaseDetector(run_dir)
         info = detector.detect()
@@ -192,7 +194,10 @@ class ActService:
     def _read_context_files(self, info: PhaseInfo, run_dir: Path) -> dict[str, str]:
         """files_to_read のうち存在するファイルを読み込んで返す。"""
         context: dict[str, str] = {}
-        for filename in info.files_to_read:
+        files_to_read = list(info.files_to_read)
+        if "execution-assignment.md" not in files_to_read and (run_dir / "execution-assignment.md").exists():
+            files_to_read.append("execution-assignment.md")
+        for filename in files_to_read:
             path = run_dir / filename
             if path.exists():
                 context[filename] = path.read_text(encoding="utf-8")
@@ -207,19 +212,52 @@ class ActService:
             return context.get(filename, "")
 
         if phase == Phase.PLAN_NEEDED:
+            assignment_content = _get("execution-assignment.md")
+            goal_content = _get("goal.md")
+            selection = resolve_planner_specialist(
+                goal_text=goal_content,
+                assignment_text=assignment_content,
+                framework_root=self._settings.framework_root,
+            )
+            selection_note = (
+                f"- Mode: {selection.mode}\n"
+                f"- Selected P-TYPE: {selection.ptype or '(none)'}\n"
+                f"- Specialist Path: {selection.specialist_path.as_posix() if selection.specialist_path else '(none)'}\n"
+                f"- Reason: {selection.reason}\n"
+            )
             return render_plan_prompt(
-                goal_content=_get("goal.md"),
+                goal_content=goal_content,
+                specialist_content=selection.specialist_content,
+                specialist_selection_note=selection_note,
+                plan_review_content=_get("plan_review.md"),
             )
         elif phase == Phase.BUILD_NEEDED:
             return render_build_prompt(
                 plan_content=_get("plan.md"),
                 handoff_content=_get("handoff.md"),
+                build_review_content=_get("build_review.md"),
             )
         elif phase == Phase.REVIEW_NEEDED:
+            assignment_content = _get("execution-assignment.md")
+            goal_content = _get("goal.md")
+            selection = resolve_critic_specialist(
+                goal_text=goal_content,
+                assignment_text=assignment_content,
+                framework_root=self._settings.framework_root,
+            )
+            selection_note = (
+                f"- Mode: {selection.mode}\n"
+                f"- Selected C-TYPE: {selection.ptype or '(none)'}\n"
+                f"- Specialist Path: {selection.specialist_path.as_posix() if selection.specialist_path else '(none)'}\n"
+                f"- Reason: {selection.reason}\n"
+            )
             return render_review_prompt(
-                goal_content=_get("goal.md"),
+                goal_content=goal_content,
                 build_content=_get("build.md"),
                 handoff_content=_get("handoff.md"),
+                specialist_content=selection.specialist_content,
+                specialist_selection_note=selection_note,
+                review_review_content=_get("review_review.md"),
             )
         else:
             # AUTO_OWNED_PHASES に追加された未実装 phase への安全なフォールバック

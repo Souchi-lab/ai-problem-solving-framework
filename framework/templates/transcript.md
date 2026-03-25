@@ -32,7 +32,7 @@
     execution-assignment.md  どうやって実行したか（計画・実績）
     goal.md                  何を解いたか
     plan.md                  どう分解・構造化したか
-    handoff.md               何を引き継いだか（最終状態）
+    handoff.md               条件付き transfer context（使った場合のみ）
     build.md                 何を作ったか
     review.md                何を指摘されたか
     improve.md               どう判断したか

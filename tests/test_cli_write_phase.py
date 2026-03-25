@@ -220,6 +220,41 @@ class TestWritePhaseValidation:
         result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin"], template_only)
         assert result.exit_code != 0
 
+    def test_transport_preamble_is_sanitized_before_save(self, tmp_path: Path) -> None:
+        """wrapper/log の前置きがあっても Markdown 本文だけ保存する。"""
+        self._setup(tmp_path)
+        input_text = (
+            "[APSF] run: test\n"
+            "[Step 2/3] invoke claude -p...\n"
+            "[Note] wrapper note\n"
+            "\n"
+            "# Plan\n"
+            "\n"
+            "Actual line 1\n"
+            "Actual line 2\n"
+            "Actual line 3\n"
+            "Actual line 4\n"
+        )
+        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin"], input_text)
+        assert result.exit_code == 0, result.output
+        saved = (tmp_path / "runs" / self.RUN / "plan.md").read_text(encoding="utf-8")
+        assert saved.startswith("# Plan\n")
+        assert "[APSF]" not in saved
+        assert "[Step 2/3]" not in saved
+
+    def test_transport_only_input_is_rejected(self, tmp_path: Path) -> None:
+        """transport/status text だけなら phase file として保存しない。"""
+        self._setup(tmp_path)
+        input_text = (
+            "[APSF] run: test\n"
+            "[Step 2/3] invoke claude -p...\n"
+            "[Done] build.md saved\n"
+            "Permission required\n"
+        )
+        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin"], input_text)
+        assert result.exit_code != 0
+        assert not (tmp_path / "runs" / self.RUN / "plan.md").exists()
+
 
 # ---------------------------------------------------------------------------
 # TestWritePhaseOverwrite: 上書き保護 / --force

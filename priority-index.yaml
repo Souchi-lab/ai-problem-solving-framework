@@ -1,0 +1,13 @@
+# APSF Viewer Priority Index
+# This file controls the sorting and badges in the Viewer.
+
+runs:
+  2026-03-25-001_sochi-2d-stock-difficulty-calibration:
+    priority: Now
+    reason: "Current main focus. Prioritize SoChi BLOCKS 2D progress."
+  2026-03-24-012_fw-improvement_viewer-browser-and-db-workflow-test:
+    priority: Next
+    reason: "Keep as follow-up. Close remaining human scenarios after SoChi BLOCKS 2D work."
+  2026-03-24-014_fw-improvement_viewer-codex-architect-bridge-implementation:
+    priority: Later
+    reason: "Viewer bridge implementation is in good shape. Return only if validation or polish is needed."

@@ -14,21 +14,19 @@ from typing import Optional
 
 
 # run 命名規則のパターン: YYYY-MM-DD_case-key_topic または YYYY-MM-DD-NNN_case-key_topic
-_RUN_NAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}(-\d+)?_[a-z0-9-]+_[a-z0-9-]+$")
+_RUN_NAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}(-\d+)?(_[a-z0-9-]+)+$")
 
 # child run 命名規則のパターン: NNNcN_case-key_topic（親番号3桁以上 + c + 連番）
-_CHILD_RUN_NAME_PATTERN = re.compile(r"^\d{3,}c\d+_[a-z0-9-]+_[a-z0-9-]+$")
+_CHILD_RUN_NAME_PATTERN = re.compile(r"^\d{3,}c\d+(_[a-z0-9-]+)+$")
 
 # taxonomy ディレクトリ名（lookup 優先順）
-_TAXONOMY_DIRS: tuple[str, ...] = ("fw-improvement", "work")
+_TAXONOMY_DIRS: tuple[str, ...] = ("fw-improvement", "work", "verification")
 
 # run 内の標準ファイル一覧（順序が workflow の順番に対応）
 STANDARD_FILES = [
     "execution-assignment.md",
-    "model-assignment.md",
     "goal.md",
     "plan.md",
-    "handoff.md",
     "build.md",
     "review.md",
     "improve.md",
@@ -45,6 +43,12 @@ STANDARD_FILES = [
 # IMPROVE_PLAN_OPTIONAL / VERIFY_OPTIONAL フェーズは、
 # これらのファイルが run ディレクトリに存在する場合にのみ発火する。
 OPTIONAL_FILES: list[str] = [
+    "model-assignment.md",  # conditional: record only when model choice matters
+    "handoff.md",          # conditional: create only when transfer context is needed
+    "plan_review.md",   # optional: re-plan feedback for Planner
+    "build_review.md",  # optional: re-build feedback for Builder
+    "review_review.md", # optional: re-review feedback for Critic
+    "improve_review.md",# optional: re-improve feedback for Judge
     "improve-plan.md",  # v0.2: Improve Plan フェーズ（手動作成）
     "verify.md",        # v0.2: Verify フェーズ（手動作成）
     "transcript.md",    # result.md 完了後に `apsf transcript` が生成
@@ -104,8 +108,35 @@ class RunRepository:
         return self._runs_dir / run_name
 
     def validate_run_name(self, run_name: str) -> bool:
-        """命名規則 YYYY-MM-DD_case-key_topic に従っているかを確認する。"""
+        """命名規則 YYYY-MM-DD_case-key_topic または YYYY-MM-DD-NNN_case-key_topic を確認する。"""
         return bool(_RUN_NAME_PATTERN.match(run_name))
+
+    def next_run_seq(self, date: str, taxonomy: Optional[str] = None) -> int:
+        """
+        指定日の top-level run の次連番を返す。
+
+        番号なし形式（YYYY-MM-DD_case-key_topic）は seq=0 とみなす。
+        返却値は 1 始まり。
+        """
+        date_prefix = f"{date}_"
+        seq_prefix = f"{date}-"
+        max_seq = 0
+
+        for name in self.list_all_runs(taxonomy=taxonomy):
+            if "/" in name:
+                continue
+            if name.startswith(date_prefix):
+                max_seq = max(max_seq, 0)
+                continue
+            if not name.startswith(seq_prefix):
+                continue
+
+            rest = name[len(seq_prefix):]
+            seq_str, sep, _ = rest.partition("_")
+            if sep and seq_str.isdigit():
+                max_seq = max(max_seq, int(seq_str))
+
+        return max_seq + 1
 
     def init_run(
         self,
@@ -130,8 +161,8 @@ class RunRepository:
         if not self.validate_run_name(run_name):
             raise ValueError(
                 f"Invalid run name: '{run_name}'\n"
-                "Expected format: YYYY-MM-DD_case-key_topic\n"
-                "Example: 2026-03-15_sochi-blocks_sns-post-template"
+                "Expected format: YYYY-MM-DD_case-key_topic or YYYY-MM-DD-NNN_case-key_topic\n"
+                "Example: 2026-03-15-001_sochi-blocks_sns-post-template"
             )
 
         if taxonomy is not None:
@@ -370,7 +401,7 @@ class RunRepository:
         if not self.validate_run_name(parent_name):
             raise ValueError(
                 f"Invalid parent run name: '{parent_name}'\n"
-                "Expected format: YYYY-MM-DD_case-key_topic"
+                "Expected format: YYYY-MM-DD_case-key_topic or YYYY-MM-DD-NNN_case-key_topic"
             )
         # V-2: parent ディレクトリの存在確認（taxonomy-aware）
         parent_dir = self._resolve_run_root(parent_name, taxonomy)
@@ -428,7 +459,9 @@ class RunRepository:
             parent_name, child_name, "result.md", taxonomy
         ).exists()
 
-    def format_run_name(self, date: str, case_key: str, topic: str) -> str:
+    def format_run_name(
+        self, date: str, case_key: str, topic: str, seq: Optional[int] = None
+    ) -> str:
         """
         命名規則に従った run 名を生成する。
 
@@ -440,5 +473,9 @@ class RunRepository:
         Example:
             format_run_name("2026-03-15", "sochi-blocks", "sns-post-template")
             → "2026-03-15_sochi-blocks_sns-post-template"
+            format_run_name("2026-03-15", "sochi-blocks", "sns-post-template", seq=1)
+            → "2026-03-15-001_sochi-blocks_sns-post-template"
         """
-        return f"{date}_{case_key}_{topic}"
+        if seq is None:
+            return f"{date}_{case_key}_{topic}"
+        return f"{date}-{seq:03d}_{case_key}_{topic}"

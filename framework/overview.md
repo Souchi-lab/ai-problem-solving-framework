@@ -114,7 +114,7 @@ goal.md 〜 result.md は**一次記録**である。
 execution-assignment.md  how to run
 goal.md                  what to solve
 plan.md                  how to approach
-handoff.md               what was passed between roles
+handoff.md               conditional transfer context between roles
 build.md                 what was made
 review.md                what was found
 improve.md               what was decided

@@ -23,6 +23,7 @@ Purpose: 次の FW 改善 run を切るための優先度付き論点整理
 | P2 | transcript / result / review / judge 境界の再定義 | phase責務整理の派生だが、二次成果物と最終判断のズレが目立つ |
 | P2 | 実験系 run に弱い箇所の整理 | 既に SoChi BLOCKS 系 run で需要が見えている |
 | P2 | 再利用しづらいルール・命名規則の整理 | 規模が大きくなるほど効いてくる |
+| P2 | **AI問題解決プロセスの資産化 (DB Sync)** | 毎日回すほど MD だけでは「過去の知恵」を検索しにくくなる |
 | P3 | 親子 run 導入時に衝突しそうな箇所の先回り整理 | 既に提案 run はあるが、本体 FW への反映は未整理 |
 
 ---
@@ -191,6 +192,24 @@ Purpose: 次の FW 改善 run を切るための優先度付き論点整理
 - suffix / version / experiment 用法のルール
 - 再利用しやすい run archetype 名のカタログ
 
+### 8. AI Problem-Solving Assetization (DB Sync)
+
+**Issue**
+
+- 毎日 Run を回すと Markdown ファイルが膨大になり、ファイル検索だけでは「過去にどう解決したか」を横断的に引き出しにくくなる
+- 100 件、1000 件と溜まった時のメタデータ分析（成功率、ボトルネック特定）が困難
+- Planner が「過去の似た事例」を RAG 的にプロンプトに盛り込む仕組みへの発展が必要
+
+**Likely improvement run**
+
+- `apsf_db-sync-and-assetization`
+
+**Expected deliverable**
+
+- Run のメタデータ（Goal, Result, Roles, Outcome）をインデックスする DB (SQLite / Vector) スキーマ
+- `apsf sync-db` コマンドによる Markdown to DB 同期の実装
+- Planner / Critic が DB から「過去の知恵」を検索してプロンプトを強化するプロトタイプ
+
 ---
 
 ## P3: 親子 run 導入を見据えた衝突点
@@ -242,7 +261,8 @@ Purpose: 次の FW 改善 run を切るための優先度付き論点整理
 ### Third wave
 
 7. `apsf_reusable-naming-and-rulebook`
-8. `apsf_parent-child-collision-audit`
+8. `apsf_db-sync-and-assetization`
+9. `apsf_parent-child-collision-audit`
 
 ---
 
@@ -270,3 +290,36 @@ Purpose: 次の FW 改善 run を切るための優先度付き論点整理
 
 - このメモは issue 一覧ではなく、**次の APSF 改善 run 候補を優先度順に並べた backlog** として使う
 - P0 / P1 は framework の基礎整備、P2 は運用拡張、P3 は将来衝突の先回り、という位置づけで読むと分かりやすい
+---
+
+## Third Wave Extension
+
+### APSF GUI / Run Browser
+
+Add this as a Third wave backlog item after DB sync.
+
+Why:
+- run / phase / artifact / handoff / review / result are becoming too large to
+  navigate comfortably through CLI + Markdown alone
+- once `apsf sync-db` exists, a GUI can provide much higher leverage for
+  browsing, search, and similar-run retrieval
+- parent/child run visualization will benefit from a dedicated UI
+
+Suggested run:
+- `apsf_gui-run-browser`
+
+Expected deliverable:
+- run list and phase dashboard
+- artifact viewer for goal / plan / build / review / result
+- search UI backed by DB sync / retrieval
+- parent/child tree view
+
+Ordering note:
+- DB first
+- GUI second
+
+Recommended Third wave order:
+1. `apsf_reusable-naming-and-rulebook`
+2. `apsf_db-sync-and-assetization`
+3. `apsf_gui-run-browser`
+4. `apsf_parent-child-collision-audit`

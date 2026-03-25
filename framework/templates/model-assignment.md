@@ -1,17 +1,13 @@
 # Model Assignment
 
-<!-- 1 run の開始時に作成する。どの role に何を使うかをここで決める。 -->
-<!-- run の途中で変更する場合は変更理由も記録する。 -->
+<!-- Record only the provider/model choices that materially affect the run. -->
+<!-- See framework/operating-model.md -> Artifact Trigger Policy for mandatory / recommended / optional conditions. -->
 
 ---
 
 ## Run Name
 
-<!-- runs/ のフォルダ名 -->
-
 ## Goal Summary
-
-<!-- goal.md から 1〜2 文で転記 -->
 
 ---
 
@@ -19,34 +15,32 @@
 
 | Role | Provider | Model | Human? | Notes |
 |---|---|---|---|---|
-| Planner | | | ✅ / - | |
-| JuniorBuilder | | | - | |
-| Builder | | | - | |
-| Critic | | | - | |
-| Judge | | | ✅ | v0.1 は人間必須 |
+| Planner | | | no / yes | Why this planner setup fits the run |
+| JuniorBuilder | | | no | Optional support role only if used |
+| Builder | | | no | Main implementation model choice |
+| Critic | | | no / yes | Review model or human review choice |
+| Judge | | | yes | Final decision remains human unless policy changes |
 
 ---
 
 ## Why This Assignment
 
-<!-- なぜこの組み合わせにしたか。コスト・品質・速度のトレードオフを書く -->
+<!-- Capture the main tradeoff only: capability, cost, independence, or review quality. -->
 
--
+- 
 
 ---
 
 ## Cost Awareness
 
-<!-- 予想コスト感覚。高コストモデルをどの工程に集中投入するか -->
+<!-- Note only cost/latency concerns that matter for this run. -->
 
-- Build 工程: [モデル名] → 最も高品質な出力が必要なため
-- その他: コスト効率重視
+- 
 
 ---
 
 ## Expected Risk
 
-<!-- この割り当てで想定されるリスク -->
+<!-- Record only model-selection risks that could change the run outcome. -->
 
-- [ ]
 - [ ]

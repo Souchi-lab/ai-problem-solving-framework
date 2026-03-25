@@ -66,7 +66,7 @@ class HandoffService:
             lines.append("- (none)\n")
         lines.append("\n")
 
-        lines.append("## What the Next Agent Should Do\n\n")
+        lines.append("## What the Next Role Should Inspect First\n\n")
         if h.next_actions:
             for i, action in enumerate(h.next_actions, 1):
                 lines.append(f"{i}. {action}\n")
@@ -79,7 +79,7 @@ class HandoffService:
             lines.append("\n")
 
         if h.notes:
-            lines.append(f"## Notes\n\n{h.notes}\n")
+            lines.append(f"## Optional Notes\n\n{h.notes}\n")
 
         return "".join(lines)
 

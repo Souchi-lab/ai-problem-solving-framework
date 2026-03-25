@@ -1,6 +1,6 @@
 # Review
 
-<!-- build.md + 成果物 + handoff.md をもとに Critic が作成する -->
+<!-- build.md + 成果物 をもとに Critic が作成する。handoff.md は存在する場合だけ追加 transfer context として参照する -->
 <!-- Builder と異なるモデル・視点で評価すること -->
 
 ---

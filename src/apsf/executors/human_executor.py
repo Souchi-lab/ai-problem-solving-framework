@@ -52,6 +52,7 @@ _ROLE_HANDOFF_GUIDE: dict[Role, list[str]] = {
     Role.JUDGE: [
         "決定事項: 採用・修正依頼・却下 の判断と理由",
         "未解決: 次サイクルで改善すべき点（result.md に記録）",
+        "補助メモ: improve_review.md がある場合は、その修正要求を improve.md に反映する",
         "次へ: 採用なら result.md 作成、修正依頼なら Builder に差し戻し",
     ],
 }
@@ -136,9 +137,10 @@ class HumanExecutor(BaseExecutor):
             "",
         ])
 
-        # 4. handoff.md に残すべき内容（role 別ガイダンス）
+        # 4. handoff.md に残すべき内容（必要な場合のみ / role 別ガイダンス）
         if handoff_items:
-            lines.append(">> Update handoff.md -- Record These Items")
+            lines.append(">> Optional handoff.md -- Record These Items Only If The Next Role Needs Extra Transfer Context")
+            lines.append("  - If the file does not exist, create it from framework/templates/handoff.md")
             for item in handoff_items:
                 lines.append(f"  - {item}")
             lines.append("")
@@ -147,7 +149,7 @@ class HumanExecutor(BaseExecutor):
         lines.extend([
             ">> Done? Check These",
             f"  [ ] {output_file} を保存した",
-            "  [ ] handoff.md を更新した（上記 3 項目）",
+            "  [ ] 必要なら handoff.md を更新した（追加 transfer context がある場合のみ）",
             "  [ ] 次の role に作業を引き継いだ",
         ])
 

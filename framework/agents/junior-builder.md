@@ -28,7 +28,7 @@ JuniorBuilder は「素材を用意する係」であり、
 
 | 項目 | 内容 |
 |---|---|
-| **入力** | `plan.md`（Execution Plan） + `handoff.md`（Planner からの引き継ぎ） |
+| **入力** | `plan.md`（Execution Plan） + optional `handoff.md`（Planner からの追加引き継ぎがある場合） |
 | **出力** | 候補リスト / 下書き / 整理済み素材 + `build.md` の下書き |
 
 ---

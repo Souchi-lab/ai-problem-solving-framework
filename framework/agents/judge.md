@@ -73,3 +73,17 @@ v0.2 以降では、Judge を独立した AI Agent として定義すること�
 暫定方針:
 - **定量基準 → AI Judge**、**定性基準 → 人間 Judge** のハイブリッド構成
 - Judge の判断ログも記録し、Judge 自体の精度を改善できる仕組みを作る
+---
+
+## Matrix Alignment Addendum
+
+This agent guide is aligned to `framework/responsibility-matrix.md`.
+
+Judge responsibilities:
+- Decide whether the run is accepted or needs another iteration.
+- Record that decision in `improve.md` or close the run in `result.md`.
+- Preserve an explicit trail from findings to disposition.
+
+Judge must not:
+- Replace Critic review with an undocumented acceptance shortcut.
+- Ask Builder to bypass review history when closing a run.

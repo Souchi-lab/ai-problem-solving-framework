@@ -1,141 +1,184 @@
-# Operating Model — マルチモデル運用の思想
+# Operating Model
 
-## なぜマルチモデル運用か
+## ねらい
 
-AI モデルは一枚岩ではない。
-「すべての工程を同一モデルに任せる」は、コスト・品質・依存リスクの観点から非最適である。
+APSF は、役割分担・判断境界・ durable artifact を明確にして、
+AI と人間が同じ run を安全に引き継げるようにする運用モデルです。
 
-このフレームワークは以下の考え方に基づく：
+特に重要なのは次の 3 点です。
 
-> **高性能モデルは Build のような高付加価値工程に集中投入する。
-> それ以外の工程には、目的に合った適切なモデルを使う。**
+- role と provider / model を混同しない
+- canonical artifact を phase ごとに分ける
+- handoff や model choice は「必要なときだけ」記録する
 
----
-
-## role / provider / model の関係
-
-3 層を明確に分離する。
-
-```
-role     = 何をするか（Planner / Builder / Critic など）
-provider = どの会社の API を使うか（OpenAI / Anthropic / Gemini）
-model    = 具体的なモデル名（gpt-4o / claude-sonnet-4-6 / gemini-2.0-flash など）
-```
-
-**NG 設計の例:**
-```
-ClaudeBuilder  → role と provider が密結合
-GeminiPlanner  → 差し替えのたびにコードを変更しなければならない
-```
-
-**OK 設計の例:**
-```
-BuilderAgent uses AnthropicProvider(model="claude-sonnet-4-6")
-CriticAgent  uses OpenAIProvider(model="gpt-4o")
-```
-
-role を変えずに provider だけ差し替えられることが重要。
-`model-assignment.md` でこの割当を run ごとに定義する。
+> 重要: APSF で最も強い build 実行権限を持つモデルは Build に集中させる。
+> Plan / Review / Improve は判断責務を保ち、Builder の代わりに phase をまたいで書かない。
 
 ---
 
-## 推奨 role 構成
+## role / provider / model の分離
 
-| role | 役割 | 推奨モデル特性 |
+```text
+role     = 何をするか   (Planner / JuniorBuilder / Builder / Critic / Judge)
+provider = どこの API を使うか   (OpenAI / Anthropic / Gemini)
+model    = どのモデルを使うか   (gpt-4o / claude-sonnet / gemini-flash など)
+```
+
+悪い例:
+
+```text
+ClaudeBuilder
+GeminiPlanner
+```
+
+良い例:
+
+```text
+Builder uses AnthropicProvider(model="claude-sonnet")
+Critic uses OpenAIProvider(model="gpt-4o")
+```
+
+run ごとの具体割当は、必要に応じて `model-assignment.md` に記録する。
+
+---
+
+## 標準 role
+
+| role | 役割 | 備考 |
 |---|---|---|
-| **Planner** | 問題分解・計画立案 | 推論力 / 構造化力。人間が入ると品質が安定しやすい |
-| **JuniorBuilder** | 候補出し・下書き・整理 | 速度重視。軽量モデルで十分 |
-| **Builder** | 実装・具体化・統合 | **高品質モデル推奨**。最も付加価値が高い工程 |
-| **Critic** | レビュー・問題指摘 | Builder と**別系統**のモデルを推奨 |
-| **Judge** | 完了判定・最終評価 | v0.1 では**人間が担当**することで品質が安定 |
+| Planner | 問題の整理、選択肢比較、方針決定 | build 境界を決める |
+| JuniorBuilder | 任意の補助 build | main build の代替ではない |
+| Builder | 実装・生成・ build 記録 | 最も強い build 権限を持つ |
+| Critic | 独立レビュー | build の代わりに直さない |
+| Judge | accept / iterate の判断 | 最終判断責務 |
+| Human | 必要に応じて各 role を兼任 | governance の最終責任者 |
 
 ---
 
-## 推奨モデル帯のガイドライン
+## Artifact Trigger Policy
 
-これは指針であり、run ごとに `model-assignment.md` で上書きしてよい。
+軽量化後の APSF では、`handoff.md` と `model-assignment.md` を残しつつ、
+無条件 boilerplate としては扱わない。
 
-| role | 推奨帯 | 理由 |
+### `handoff.md`
+
+次の role が canonical artifact だけでは transfer context を失う場合に使う。
+
+Required when:
+
+- role / model / tool / person / session の境界をまたぎ、文脈落ちのリスクがある
+- 次の role に非自明な review focus、execution caution、open issue、constraint を渡す必要がある
+- canonical artifact に残っていない運用上の注意を transfer しないと downstream 判断がぶれる
+
+Skippable when:
+
+- 同じ operator が同じ session で継続し、transfer risk が実質ない
+- `plan.md` / `build.md` / `review.md` などの canonical artifact だけで次 role が動ける
+- handoff を書いても既存 artifact の言い換えにしかならない
+
+`handoff.md` は transfer note であり、phase artifact の代替ではない。
+
+### `model-assignment.md`
+
+model choice 自体が run の品質、独立性、コスト、再現性に影響する場合に使う。
+
+Mandatory when:
+
+- 複数 provider / model や non-default role assignment を意図的に使う
+- review independence を distinct model/provider choice で担保する
+- capability / safety / policy 制約のため model choice を明示記録する必要がある
+
+Recommended when:
+
+- cost / latency / availability tradeoff が run の進め方に影響する
+- external critic、parallel review、provider comparison を予定している
+- rerun 時に「なぜその setup を選んだか」を残す価値が高い
+
+Optional when:
+
+- obvious default setup で、model choice が outcome にほぼ影響しない
+- multi-model tradeoff を後から参照する必要がない
+
+Template references:
+
+- [`framework/templates/handoff.md`](templates/handoff.md)
+- [`framework/templates/model-assignment.md`](templates/model-assignment.md)
+
+---
+
+## モデル割当の指針
+
+以下は標準指針であり、run ごとに必要なら上書きしてよい。
+
+| role | 標準候補 | 意図 |
 |---|---|---|
-| Planner | GPT-4o / Claude Opus / 人間 | 計画の質が後工程全体に影響する |
-| JuniorBuilder | Gemini Flash / GPT-4o mini | 候補出しは速度重視でよい |
-| Builder | **Claude Sonnet / Claude Opus** | 高品質アウトプットが必要な工程 |
-| Critic | GPT-4o / 人間 | Builder と別視点・別モデルで独立性を確保 |
-| Judge | 人間（v0.1） | 判断の最終責任は人間が持つ |
+| Planner | GPT-4o / Claude Opus / Human | 比較・判断・方針言語化 |
+| JuniorBuilder | Gemini Flash / GPT-4o mini | 軽量補助作業 |
+| Builder | Claude Sonnet / Claude Opus | 強い build 実行 |
+| Critic | GPT-4o / Human | Builder と独立した視点 |
+| Judge | Human | accept / iterate の最終責任 |
 
-### 高コストモデルの使いどころ
-
-```
-┌─────────────────────────────────────────────────┐
-│  Plan  │ JuniorBuild │    Build    │   Review    │
-│  中コスト│   低コスト   │  高コスト   │   中コスト   │
-│        │             │ ← ここに集中│             │
-└─────────────────────────────────────────────────┘
-```
-
-全工程に最高性能モデルを使う必要はない。
-**Build に投資し、JuniorBuilder で省コスト化する**のが基本戦略。
-
----
-
-## Critic を別モデルにする意義
-
-同一モデルが Builder と Critic を兼ねると、自分のアウトプットを評価することになり、
-バイアスがかかりやすい。
-
-**推奨:**
-- Builder = Anthropic 系
-- Critic = OpenAI 系（または人間）
-
-異なる学習データ・アーキテクチャのモデルを組み合わせることで、
-見落としを補完し合うレビューになる。
-
----
-
-## 人間が介入すべき箇所
-
-| タイミング | 理由 |
-|---|---|
-| **Goal 定義**（必須） | 「何を解くか」は人間の判断が不可欠 |
-| **Planner**（推奨） | 計画の方向性は人間が承認することで品質が安定 |
-| **Judge**（v0.1 必須） | 成功判定・完了判断の最終責任は人間が持つ |
-| **Improve 判断**（必須） | 続けるか終わるかの意思決定 |
-
-AI が全自動で回してよいのは **Plan → Build → Review の実行部分**であり、
-入口（Goal）と出口（Judge / Improve）は人間が担当することが品質の安定につながる。
+Builder と Critic は、可能なら異なる model / provider を使う。
+同系統モデルを使う場合でも、review independence が落ちないかを意識する。
 
 ---
 
 ## handoff の重要性
 
-モデルを分けるほど、role 間の受け渡し（handoff）の品質が重要になる。
+handoff は「常に作るもの」ではなく、「必要な transfer risk があるときにだけ作るもの」です。
 
-**失敗パターン:**
-- Builder が何を作ったか Critic に伝わっていない
-- Planner の意図が Build に引き継がれていない
-- Critic の指摘が Improve に反映されていない
+典型例:
 
-**このフレームワークの解決策:**
-`handoff.md` を role 間の受け渡し文書として使う。
-Markdown が人間と複数 AI の**共通言語**になる。
-
-```
-Planner → handoff.md → Builder
-Builder → handoff.md → Critic
-Critic  → handoff.md → Judge/Improve
+```text
+Planner -> (handoff.md if needed) -> Builder
+Builder -> (handoff.md if needed) -> Critic
+Critic  -> (handoff.md if needed) -> Judge / Improve
 ```
 
-handoff.md には「何が決まっているか」「何が未決か」「次の role は何をすべきか」を明記する。
+書くなら次の 3 点に絞る。
+
+- 何が決まっているか
+- 何が未決か
+- 次の role は何を優先確認すべきか
 
 ---
 
 ## run ごとの model assignment
 
-1 run の開始時に `model-assignment.md` を作成する。
+`model-assignment.md` は毎 run 強制ではない。
+上の trigger policy に従い、必要な run だけ記録する。
 
-これにより:
-- どの run でどのモデルを使ったかが記録される
-- run 間の比較・分析が可能になる
-- コスト意識が自然に生まれる
+使う価値が高いケース:
 
-テンプレート: [`framework/templates/model-assignment.md`](templates/model-assignment.md)
+- role ごとに provider / model を分ける run
+- critique independence が重要な run
+- cost / latency / provider choice が outcome に効く run
+- 後から rerun / comparison したい run
+
+---
+
+## 人間が入るべき局面
+
+| タイミング | 理由 |
+|---|---|
+| Goal | 問題設定と成功条件の最終責任 |
+| Planner が迷うとき | 方針判断の境界確認 |
+| Judge | accept / iterate の最終判断 |
+| Improve | 差し戻し範囲の最終決定 |
+
+AI が強いのは Plan / Build / Review の実務支援だが、
+Goal と Judge を人間が押さえることで運用の安定性が上がる。
+
+---
+
+## まとめ
+
+APSF の operating model は次のように解釈する。
+
+- phases が purpose と stop condition を定義する
+- roles が誰がどの artifact を書けるかを定義する
+- artifacts が durable record を定義する
+- `handoff.md` と `model-assignment.md` は trigger-based に使う
+
+今後の framework 更新で文書が衝突した場合は、
+この operating model を正本として alignment する。

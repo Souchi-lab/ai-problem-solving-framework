@@ -582,6 +582,32 @@ class TestTemplateStateScenarios:
         info = d.detect()
         assert info.phase == Phase.BUILD_NEEDED
 
+    def test_exact_copied_template_file_is_not_treated_as_filled(
+        self, tmp_path: Path
+    ) -> None:
+        """runs/_template と完全一致の copied file は filled 扱いしない。"""
+        runs_root = tmp_path / "runs"
+        template_dir = runs_root / "_template"
+        run_dir = runs_root / "2099-01-01-001_test-case_template-copy"
+        template_dir.mkdir(parents=True)
+        run_dir.mkdir(parents=True)
+
+        template_content = (
+            "# Plan\n"
+            "\n"
+            "<!-- template comment -->\n"
+            "\n"
+            "## Problem Structure\n"
+            "-\n"
+            "- [ ] Step 1:\n"
+        )
+        (template_dir / "plan.md").write_text(template_content, encoding="utf-8")
+        (run_dir / "plan.md").write_text(template_content, encoding="utf-8")
+
+        d = PhaseDetector(run_dir)
+        assert d._is_filled("plan.md") is False
+        assert d._has_any_content("plan.md") is False
+
     def test_review_template_not_already_filled_after_build_filled(
         self, tmp_path: Path
     ) -> None:

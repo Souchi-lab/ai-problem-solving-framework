@@ -26,10 +26,14 @@ TRANSCRIPT_SOURCE_ORDER: list[tuple[str, str]] = [
     ("goal.md",                 "Goal"),
     ("plan.md",                 "Plan"),
     ("improve-plan.md",         "Improve Plan"),           # v0.2: なければスキップ
+    ("plan_review.md",          "Plan Review (Rework)"),      # Added for completeness
     ("build.md",                "Build"),
+    ("build_review.md",         "Build Review (Rework)"),     # Added for completeness
     ("review.md",               "Review"),
+    ("review_review.md",        "Review Review (Rework)"),    # User added
     ("handoff.md",              "Handoff"),
     ("verify.md",               "Verify"),                 # v0.2: なければスキップ
+    ("improve_review.md",       "Judge Review (Rework)"),     # User added
     ("improve.md",              "Improve / Judge Decision"),
     ("result.md",               "Result"),
 ]

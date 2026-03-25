@@ -88,6 +88,36 @@ plan.md の `## External Inputs` セクションの Build 開始前チェック�
 
 ---
 
+## Goal Readiness Check 責務
+
+Planner は plan.md を書く前に、goal.md の planning readiness を限定的にチェックする。
+これは goal review ではなく、**planning を阻害する構造的問題の除去**が目的。
+
+### チェックスコープ
+
+**対象（planning readiness check のスコープ）**:
+- スコープの不在（何を作るか判断できない）
+- plan が依存する前提の欠如
+- 完了条件の不在または矛盾
+- blocking 依存関係の未記載
+
+**非対象（goal ownership を侵す行為）**:
+- 文体・表現・語彙の改善提案
+- goal の優先順位変更・目標の再定義
+- goal.md の直接編集
+
+### 判定と記録
+
+`plan.md` の `## Goal Readiness Check` セクションに判定結果を記録する。
+
+| 判定 | 条件 | アクション |
+|---|---|---|
+| Proceed | 問題なし | plan 作成を続ける |
+| Proceed with assumptions | 軽微な曖昧さあり、仮定で吸収可能 | 仮定を記録して plan を続ける |
+| Blocked | planning を阻害する重大な欠如・矛盾 | 根拠を記録し、Human に差し戻す。goal.md は編集しない |
+
+---
+
 ## 良い Plan の条件
 
 1. **問題が分解されている**: 「大きな問題」が扱いやすいサブ問題に分かれている
@@ -110,6 +140,12 @@ plan.md の `## External Inputs` セクションの Build 開始前チェック�
 ---
 
 ### 出力形式
+
+## Goal Readiness Check
+- goal.md の planning readiness を確認する（goal review ではなく、planning を阻害する構造的問題の限定チェック）
+- チェック項目: スコープの有無 / plan が依存する前提の記載 / Success Criteria の有無と矛盾 / blocking 依存関係の明示
+- 判定: Proceed / Proceed with assumptions（仮定を記録） / Blocked（根拠を記録し Human に差し戻す）
+- **Blocked の場合は以降のセクションを記入せず中断する**
 
 ## Problem Structure
 - この問題の本質は何か？
@@ -157,3 +193,25 @@ plan.md の `## External Inputs` セクションの Build 開始前チェック�
 - Claude / ChatGPT / Gemini / Codex など、任意の AI に上記プロンプトを渡せばよい
 - 人間が Planner を担当してもよい
 - Planner の出力形式（plan.md の構造）は変えないこと
+---
+
+## Matrix Alignment Addendum
+
+This agent guide is aligned to `framework/responsibility-matrix.md`.
+
+Planner responsibilities:
+- Shape the approach and produce `plan.md`.
+- Create an initial `handoff.md` when the next role needs execution context.
+- Support goal clarification under Human governance.
+
+Planner must not:
+- Produce the final build artifact.
+- Create `review.md`, `improve.md`, or `result.md`.
+- Treat goal support as final approval authority over `goal.md`.
+---
+
+## Planner Specialist Library Note
+
+If `execution-assignment.md` specifies a `Primary P-TYPE`, Planner may load the
+matching specialist file under `framework/agents/planners/` as additional
+planning guidance.

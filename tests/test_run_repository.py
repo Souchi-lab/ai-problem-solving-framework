@@ -111,6 +111,26 @@ def test_format_run_name(repo: RunRepository) -> None:
     assert name == "2026-03-15_sochi-blocks_sns-post-template"
 
 
+def test_format_run_name_with_seq(repo: RunRepository) -> None:
+    name = repo.format_run_name("2026-03-15", "sochi-blocks", "sns-post-template", seq=1)
+    assert name == "2026-03-15-001_sochi-blocks_sns-post-template"
+
+
+def test_next_run_seq_empty(repo: RunRepository) -> None:
+    assert repo.next_run_seq("2026-03-15") == 1
+
+
+def test_next_run_seq_with_existing_numbered_runs(repo: RunRepository) -> None:
+    repo.init_run("2026-03-15-001_sochi-blocks_first")
+    repo.init_run("2026-03-15-002_sochi-blocks_second")
+    assert repo.next_run_seq("2026-03-15") == 3
+
+
+def test_next_run_seq_treats_unsequenced_as_zero(repo: RunRepository) -> None:
+    repo.init_run("2026-03-15_sochi-blocks_first")
+    assert repo.next_run_seq("2026-03-15") == 1
+
+
 # --- child run 命名規則のテスト ---
 
 class TestValidateChildRunName:

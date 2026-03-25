@@ -1,6 +1,6 @@
 # Build
 
-<!-- plan.md + handoff.md をもとに Builder が作成する -->
+<!-- plan.md をもとに Builder が作成する。handoff.md は存在する場合だけ追加 transfer context として参照する -->
 
 ---
 
@@ -14,7 +14,7 @@
 
 <!-- どの role から何を受け取ったか -->
 
-- From Planner / JuniorBuilder: <!-- handoff.md または plan.md の要点 -->
+- From Planner / JuniorBuilder: <!-- plan.md の要点。handoff.md がある場合は追加 transfer context -->
 - JuniorBuilder の候補案を使用: Yes / No
 
 ---
@@ -50,3 +50,14 @@
 
 - [ ]
 - [ ]
+
+---
+
+## Alignment Note
+
+`framework/responsibility-matrix.md` is the canonical source for
+phase / role / artifact boundaries.
+
+`build.md` records what Builder produced, why, and what remains open.
+Builder self-check may be summarized here, but it is supporting context only.
+It does not replace Critic-owned `review.md`.

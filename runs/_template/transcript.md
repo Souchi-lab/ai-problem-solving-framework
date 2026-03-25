@@ -87,14 +87,14 @@
 
 ## Planning
 
-<!-- 参照: plan.md / handoff.md（Planner -> JuniorBuilder/Builder） -->
+<!-- 参照: plan.md / optional handoff.md（Planner -> JuniorBuilder/Builder） -->
 
 **Planner**:
 <!-- plan.md の Problem Structure と Selected Approach を要約する -->
 <!-- 例: goal.md を読んで問題を X・Y・Z に分解した。採用アプローチは A。 -->
 
 **Planner から JuniorBuilder / Builder への引き継ぎ要点**:
-<!-- handoff.md の What Is Decided / What Remains Open / What the Next Agent Should Do を要約する -->
+<!-- handoff.md を使う場合は What Is Decided / What Remains Open / What the Next Role Should Inspect First を要約する -->
 <!-- 要約テキストで書く。引用ブロック（>）は使わない。 -->
 <!-- 例: 変数形式・トーン・カテゴリ分類を決定した。ハッシュタグ戦略は未解決のまま Builder に委ねた。 -->
 
@@ -102,7 +102,7 @@
 
 ## Draft Generation
 
-<!-- 参照: workspaces/junior_builder/draft-*.md / handoff.md（JuniorBuilder -> Builder） -->
+<!-- 参照: workspaces/junior_builder/draft-*.md / optional handoff.md（JuniorBuilder -> Builder） -->
 <!-- JuniorBuilder を使わなかった場合は「JuniorBuilder: 該当なし（このフェーズをスキップ）」と書く -->
 
 **JuniorBuilder**:
@@ -117,7 +117,7 @@
 
 ## Build
 
-<!-- 参照: build.md / handoff.md（Builder -> Critic） -->
+<!-- 参照: build.md / optional handoff.md（Builder -> Critic） -->
 
 **Builder**:
 <!-- build.md の What was built / Decisions made を要約する -->
@@ -131,7 +131,7 @@
 
 ## Review
 
-<!-- 参照: review.md / handoff.md（Critic -> Judge） -->
+<!-- 参照: review.md / optional handoff.md（Critic -> Judge） -->
 
 **Critic**:
 <!-- review.md の Summary と Risks（Critical/Major/Minor）を要約する -->
