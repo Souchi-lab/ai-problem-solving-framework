@@ -1,13 +1,3 @@
-# Execution Model
-
-> **この文書は `framework/legacy/` に移動しました。**
-> 正本: [framework/legacy/execution-model.md](legacy/execution-model.md)
->
-> この旧位置のファイルは導線維持のために残しています。
-> 参照・更新は `framework/legacy/execution-model.md` に対して行ってください。
-
----
-
 # Execution Model — CLI / Human 前提の実行設計
 
 ## なぜ execution 抽象が必要か

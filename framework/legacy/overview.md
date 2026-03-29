@@ -1,15 +1,5 @@
 # Framework Overview
 
-> **この文書は `framework/legacy/` に移動しました。**
-> 正本: [framework/legacy/overview.md](legacy/overview.md)
->
-> この旧位置のファイルは導線維持のために残しています。
-> 参照・更新は `framework/legacy/overview.md` に対して行ってください。
-
----
-
-# Framework Overview
-
 ## このフレームワークが解きたい問題
 
 AIを使った問題解決は、現状「場当たり的なプロンプト」になりがちだ。
