@@ -1,4 +1,4 @@
-from .pipeline import Pipeline
+from ..legacy.orchestration.pipeline import Pipeline
 from ..legacy.orchestration.assignment_service import AssignmentService
 from ..legacy.orchestration.execution_assignment_service import ExecutionAssignmentService
 from ..legacy.orchestration.handoff_service import HandoffService
