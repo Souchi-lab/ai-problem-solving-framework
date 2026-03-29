@@ -8,7 +8,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from apsf.orchestration.assignment_service import AssignmentService
+from apsf.legacy.orchestration.assignment_service import AssignmentService
 from apsf.core.domain.models import Role, ProviderType
 from apsf.legacy.config.settings import Settings
 

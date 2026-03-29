@@ -15,7 +15,7 @@ ExecutionAssignmentService の基本動作を検証する。
 import pytest
 from pathlib import Path
 
-from apsf.orchestration.execution_assignment_service import ExecutionAssignmentService
+from apsf.legacy.orchestration.execution_assignment_service import ExecutionAssignmentService
 from apsf.core.domain.models import ExecutionAssignment, ExecutionType, Role, RunContext
 from apsf.legacy.executors.cli_executor import CLIExecutor
 from apsf.legacy.executors.human_executor import HumanExecutor

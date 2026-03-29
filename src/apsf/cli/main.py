@@ -563,7 +563,7 @@ def dry_run_cmd(
     pipeline の role/executor マッピングを表示する。実行はしない。
     """
     from ..legacy.config.settings import get_settings
-    from ..orchestration.execution_assignment_service import ExecutionAssignmentService
+    from ..legacy.orchestration.execution_assignment_service import ExecutionAssignmentService
     from ..core.domain.models import Role, ExecutionType
     from ..legacy.storage.run_repository import RunRepository
 
@@ -653,7 +653,7 @@ def show_execution_plan(
     各 role の実行手順・ツール・workspace を確認できる。
     """
     from ..legacy.config.settings import get_settings
-    from ..orchestration.execution_assignment_service import ExecutionAssignmentService
+    from ..legacy.orchestration.execution_assignment_service import ExecutionAssignmentService
     from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
