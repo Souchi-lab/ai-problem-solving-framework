@@ -18,7 +18,7 @@ class TestReadStdinUtf8:
     """read_stdin_utf8() のエンコーディング処理テスト"""
 
     def _call(self):
-        from apsf.cli.io import read_stdin_utf8
+        from apsf.legacy.cli.io import read_stdin_utf8
         return read_stdin_utf8
 
     def test_utf8_bytes_decoded_correctly(self) -> None:

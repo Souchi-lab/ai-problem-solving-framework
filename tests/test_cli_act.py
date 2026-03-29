@@ -22,7 +22,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from apsf.cli.main import app
+from apsf.legacy.cli.main import app
 from apsf.core.providers.base import GenerateResponse
 import apsf.legacy.config.settings as settings_module
 
@@ -145,7 +145,7 @@ class TestActAutoGeneration:
         _fill_file(run_dir, "goal.md")
 
         with patch(
-            "apsf.orchestration.act_service.ActService._get_provider",
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
             return_value=_MockProvider(),
         ):
             result = _invoke_act(tmp_path, self.RUN)
@@ -189,7 +189,7 @@ class TestActAutoGeneration:
                 return _MOCK_RESPONSE
 
         with patch(
-            "apsf.orchestration.act_service.ActService._get_provider",
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
             return_value=_CapturingProvider(),
         ):
             result = _invoke_act(tmp_path, self.RUN)
@@ -207,7 +207,7 @@ class TestActAutoGeneration:
         _fill_file(run_dir, "plan.md")
 
         with patch(
-            "apsf.orchestration.act_service.ActService._get_provider",
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
             return_value=_MockProvider(),
         ):
             result = _invoke_act(tmp_path, self.RUN)
@@ -225,7 +225,7 @@ class TestActAutoGeneration:
         _fill_file(run_dir, "build.md")
 
         with patch(
-            "apsf.orchestration.act_service.ActService._get_provider",
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
             return_value=_MockProvider(),
         ):
             result = _invoke_act(tmp_path, self.RUN)
@@ -254,7 +254,7 @@ class TestActProtection:
         (run_dir / "build.md").write_text(original, encoding="utf-8")
 
         with patch(
-            "apsf.orchestration.act_service.ActService._get_provider",
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
             return_value=_MockProvider(),
         ):
             result = _invoke_act(tmp_path, self.RUN)
@@ -283,7 +283,7 @@ class TestActDryRun:
         _fill_file(run_dir, "goal.md")
 
         with patch(
-            "apsf.orchestration.act_service.ActService._get_provider",
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
             return_value=_MockProvider(),
         ):
             result = _invoke_act(tmp_path, self.RUN, ["--dry-run"])
@@ -300,7 +300,7 @@ class TestActDryRun:
         _fill_file(run_dir, "goal.md")
 
         with patch(
-            "apsf.orchestration.act_service.ActService._get_provider",
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
             return_value=_MockProvider(),
         ):
             result = _invoke_act(tmp_path, self.RUN, ["--dry-run"])
@@ -327,7 +327,7 @@ class TestActPrintPrompt:
         _fill_file(run_dir, "goal.md")
 
         with patch(
-            "apsf.orchestration.act_service.ActService._get_provider",
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
             return_value=_MockProvider(),
         ):
             result = _invoke_act(tmp_path, self.RUN, ["--print-prompt"])

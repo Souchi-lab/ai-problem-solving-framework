@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from apsf.cli.specialist_registry import (
+from apsf.legacy.cli.specialist_registry import (
     extract_section,
     resolve_critic_specialist,
     resolve_planner_specialist,

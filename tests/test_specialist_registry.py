@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from apsf.cli.specialist_registry import (
+from apsf.legacy.cli.specialist_registry import (
     extract_primary_ctype,
     extract_primary_ptype,
     load_specialist_content,

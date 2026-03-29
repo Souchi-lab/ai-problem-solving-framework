@@ -23,7 +23,7 @@ from uuid import uuid4
 import pytest
 from typer.testing import CliRunner
 
-from apsf.cli.main import app
+from apsf.legacy.cli.main import app
 from apsf.legacy.orchestration.phase_detector import Phase, PhaseDetector
 from apsf.legacy.storage.run_repository import RunRepository, STANDARD_FILES
 import apsf.legacy.config.settings as settings_module

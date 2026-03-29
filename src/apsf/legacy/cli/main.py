@@ -129,8 +129,8 @@ def init_run(
     ),
 ) -> None:
     """指定した名前で runs/ に新しい run ディレクトリを作成する。"""
-    from ..legacy.config.settings import get_settings
-    from ..legacy.storage.run_repository import RunRepository
+    from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -427,7 +427,7 @@ def init_followup(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files"),
 ) -> None:
     """framework/experimental/redesign/followups/<slug>/ に4ファイルのスケルトンを生成する。"""
-    from ..legacy.config.settings import get_settings
+    from ..config.settings import get_settings
 
     settings = get_settings()
     followup_dir = settings.framework_root / _FOLLOWUPS_DIR / slug
@@ -468,7 +468,7 @@ def init_followup(
 @app.command("list-followups")
 def list_followups() -> None:
     """framework/experimental/redesign/followups/ 配下の follow-up 一覧を表示する。"""
-    from ..legacy.config.settings import get_settings
+    from ..config.settings import get_settings
 
     settings = get_settings()
     followups_dir = settings.framework_root / _FOLLOWUPS_DIR
@@ -562,10 +562,10 @@ def dry_run_cmd(
     指定 run の execution-assignment.md を読み込み、
     pipeline の role/executor マッピングを表示する。実行はしない。
     """
-    from ..legacy.config.settings import get_settings
-    from ..legacy.orchestration.execution_assignment_service import ExecutionAssignmentService
-    from ..core.domain.models import Role, ExecutionType
-    from ..legacy.storage.run_repository import RunRepository
+    from ..config.settings import get_settings
+    from ..orchestration.execution_assignment_service import ExecutionAssignmentService
+    from ...core.domain.models import Role, ExecutionType
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -652,9 +652,9 @@ def show_execution_plan(
 
     各 role の実行手順・ツール・workspace を確認できる。
     """
-    from ..legacy.config.settings import get_settings
-    from ..legacy.orchestration.execution_assignment_service import ExecutionAssignmentService
-    from ..legacy.storage.run_repository import RunRepository
+    from ..config.settings import get_settings
+    from ..orchestration.execution_assignment_service import ExecutionAssignmentService
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -697,8 +697,8 @@ def generate_transcript(
     transcript.md の各セクションに何を書くかを表示する。
     実際の生成は人間（または AI）が行う。
     """
-    from ..legacy.config.settings import get_settings
-    from ..legacy.storage.run_repository import RunRepository
+    from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -840,8 +840,8 @@ def start_run_cmd(
     import re
     from datetime import date
 
-    from ..legacy.config.settings import get_settings
-    from ..legacy.storage.run_repository import RunRepository
+    from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -918,10 +918,10 @@ def next_cmd(
     出力はあくまで推定です。迷ったら直接ファイルを確認してください。
     --debug を付けると判定根拠（examined files / decision reason）も表示します。
     """
-    from ..legacy.config.settings import get_settings
-    from ..legacy.orchestration.phase_detector import PhaseDetector
-    from ..legacy.orchestration.next_instruction_builder import NextInstructionBuilder
-    from ..legacy.storage.run_repository import RunRepository
+    from ..config.settings import get_settings
+    from ..orchestration.phase_detector import PhaseDetector
+    from ..orchestration.next_instruction_builder import NextInstructionBuilder
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -980,9 +980,9 @@ def transcript_cmd(
 
     transcript は二次成果物です。正確な情報は一次記録を参照してください。
     """
-    from ..legacy.config.settings import get_settings
-    from ..legacy.orchestration.transcript_generator import TranscriptGenerator
-    from ..legacy.storage.run_repository import RunRepository
+    from ..config.settings import get_settings
+    from ..orchestration.transcript_generator import TranscriptGenerator
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -1075,10 +1075,10 @@ def write_phase_cmd(
     """
     import sys
 
-    from ..legacy.config.settings import get_settings
-    from ..legacy.orchestration.next_instruction_builder import NextInstructionBuilder
-    from ..legacy.orchestration.phase_detector import Phase, PhaseDetector
-    from ..legacy.storage.run_repository import RunRepository
+    from ..config.settings import get_settings
+    from ..orchestration.next_instruction_builder import NextInstructionBuilder
+    from ..orchestration.phase_detector import Phase, PhaseDetector
+    from ..storage.run_repository import RunRepository
     from .io import read_stdin_utf8
 
     settings = get_settings()
@@ -1257,12 +1257,12 @@ def generate_setup_cmd(
     パイプ連携:
       apsf generate-setup <run> --print-prompt | claude | apsf write-phase <run> --stdin
     """
-    from ..legacy.config.settings import get_settings
+    from ..config.settings import get_settings
     from ..orchestration.act_service import ActError, ActService
-    from ..legacy.orchestration.phase_detector import Phase, PhaseDetector
-    from ..legacy.prompts.renderer import render_setup_prompt
-    from ..core.providers.base import GenerateRequest, ProviderError
-    from ..legacy.storage.run_repository import RunRepository
+    from ..orchestration.phase_detector import Phase, PhaseDetector
+    from ..prompts.renderer import render_setup_prompt
+    from ...core.providers.base import GenerateRequest, ProviderError
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -1389,9 +1389,9 @@ def act_cmd(
       ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY のいずれか
       model-assignment.md が存在する場合はそこで指定したモデルを優先する
     """
-    from ..legacy.config.settings import get_settings
+    from ..config.settings import get_settings
     from ..orchestration.act_service import ActError, ActService
-    from ..legacy.storage.run_repository import RunRepository
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -1477,7 +1477,7 @@ def act_cmd(
     # act emits a preflight warning to catch issues as early as possible.
     if not resolve_dry:
         from .role_rules import GuardSeverity, check_role_boundary, role_from_phase
-        from ..legacy.orchestration.phase_detector import PhaseDetector as _PreflightDetector
+        from ..orchestration.phase_detector import PhaseDetector as _PreflightDetector
 
         _pf_info = _PreflightDetector(run_dir).detect()
         _pf_role = role_from_phase(_pf_info.phase.value)
@@ -1551,7 +1551,7 @@ def check_env() -> None:
 
     v0.1 では API キーは optional（CLI/Human 実行には不要）。
     """
-    from ..legacy.config.settings import get_settings
+    from ..config.settings import get_settings
 
     settings = get_settings()
 
@@ -1595,7 +1595,7 @@ def view_cmd(
 
     import uvicorn
 
-    from ..viewer.api import app
+    from ...viewer.api import app
 
     url = f"http://{host}:{port}"
     typer.echo(f"\n[OK] Starting APSF Viewer at {url}")
@@ -1626,9 +1626,9 @@ def build_cmd(
       REVIEW_NEEDED  → apsf act          → apsf-claude-act.ps1  (tools: disabled)
       BUILD_NEEDED   → apsf build        → apsf-claude-build.ps1 (tools: ENABLED)
     """
-    from ..legacy.config.settings import get_settings
-    from ..legacy.orchestration.phase_detector import PhaseDetector
-    from ..legacy.storage.run_repository import RunRepository
+    from ..config.settings import get_settings
+    from ..orchestration.phase_detector import PhaseDetector
+    from ..storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)

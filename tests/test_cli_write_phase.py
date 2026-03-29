@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from apsf.cli.main import app
+from apsf.legacy.cli.main import app
 from apsf.legacy.orchestration.transcript_generator import TranscriptGenerator
 import apsf.legacy.config.settings as settings_module
 

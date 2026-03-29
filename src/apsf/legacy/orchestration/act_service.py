@@ -23,19 +23,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from ..legacy.config.settings import Settings, get_settings
-from ..core.domain.models import Role
+from ..config.settings import Settings, get_settings
+from ...core.domain.models import Role
 from ..cli.specialist_registry import resolve_critic_specialist, resolve_planner_specialist
-from ..legacy.orchestration.next_instruction_builder import NextInstructionBuilder
-from ..legacy.orchestration.phase_detector import (
+from ..orchestration.next_instruction_builder import NextInstructionBuilder
+from ..orchestration.phase_detector import (
     AUTO_OWNED_PHASES,
     HUMAN_OWNED_PHASES,
     Phase,
     PhaseDetector,
     PhaseInfo,
 )
-from ..legacy.prompts.renderer import render_build_prompt, render_plan_prompt, render_review_prompt
-from ..core.providers.base import BaseProvider, GenerateRequest, ProviderError
+from ..prompts.renderer import render_build_prompt, render_plan_prompt, render_review_prompt
+from ...core.providers.base import BaseProvider, GenerateRequest, ProviderError
 
 
 class ActError(Exception):
@@ -280,10 +280,10 @@ class ActService:
         Raises:
             ActError: API キーが一切設定されていない場合
         """
-        from ..orchestration.assignment_service import AssignmentService
-        from ..legacy.providers.anthropic_provider import AnthropicProvider
-        from ..legacy.providers.gemini_provider import GeminiProvider
-        from ..legacy.providers.openai_provider import OpenAIProvider
+        from ..assignment_service import AssignmentService
+        from ..providers.anthropic_provider import AnthropicProvider
+        from ..providers.gemini_provider import GeminiProvider
+        from ..providers.openai_provider import OpenAIProvider
 
         assignment_path = run_dir / "model-assignment.md"
         role = _PHASE_TO_ROLE.get(phase)

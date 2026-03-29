@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from apsf.cli.role_rules import (
+from apsf.legacy.cli.role_rules import (
     GuardSeverity,
     RoleBoundaryViolation,
     check_role_boundary,

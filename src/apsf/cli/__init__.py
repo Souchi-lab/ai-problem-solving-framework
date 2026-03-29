@@ -9,7 +9,7 @@ __all__ = ["app"]
 
 def __getattr__(name: str) -> Any:
     if name == "app":
-        from .main import app
+        from ..legacy.cli.main import app
 
         return app
     raise AttributeError(name)

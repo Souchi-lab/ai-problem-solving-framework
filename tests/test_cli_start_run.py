@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from apsf.cli.main import app
+from apsf.legacy.cli.main import app
 from apsf.legacy.storage.run_repository import RunRepository
 import apsf.legacy.config.settings as settings_module
 
