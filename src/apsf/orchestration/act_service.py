@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config.settings import Settings, get_settings
-from ..domain.models import Role
+from ..core.domain.models import Role
 from ..cli.specialist_registry import resolve_critic_specialist, resolve_planner_specialist
 from ..orchestration.next_instruction_builder import NextInstructionBuilder
 from ..orchestration.phase_detector import (
@@ -35,7 +35,7 @@ from ..orchestration.phase_detector import (
     PhaseInfo,
 )
 from ..prompts.renderer import render_build_prompt, render_plan_prompt, render_review_prompt
-from ..providers.base import BaseProvider, GenerateRequest, ProviderError
+from ..core.providers.base import BaseProvider, GenerateRequest, ProviderError
 
 
 class ActError(Exception):

@@ -10,9 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..domain.models import Role, RunContext, StepResult, ExecutionType
-from ..executors.base import BaseExecutor
-from ..agents.base import BaseAgent
+from ..core.domain.models import Role, RunContext, StepResult, ExecutionType
+from ..core.executors.base import BaseExecutor
+from ..core.agents.base import BaseAgent
 
 
 @dataclass

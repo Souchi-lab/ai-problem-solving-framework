@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..domain.models import Handoff, Role
+from ..core.domain.models import Handoff, Role
 
 
 class HandoffService:

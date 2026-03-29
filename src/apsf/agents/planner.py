@@ -6,10 +6,10 @@ from __future__ import annotations
 
 from ..config.settings import get_settings
 from ..cli.specialist_registry import resolve_planner_specialist
-from ..domain.models import ExecutionType, Role, RunContext, StepResult
-from ..executors.base import BaseExecutor, ExecuteRequest
+from ..core.domain.models import ExecutionType, Role, RunContext, StepResult
+from ..core.executors.base import BaseExecutor, ExecuteRequest
 from ..prompts.renderer import render_plan_prompt
-from .base import AgentError, BaseAgent
+from ..core.agents.base import AgentError, BaseAgent
 
 
 class PlannerAgent(BaseAgent):

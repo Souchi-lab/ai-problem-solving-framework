@@ -1,4 +1,4 @@
-from .base import BaseAgent, AgentError
+from ..core.agents.base import BaseAgent, AgentError
 from .planner import PlannerAgent
 from .junior_builder import JuniorBuilderAgent
 from .builder import BuilderAgent

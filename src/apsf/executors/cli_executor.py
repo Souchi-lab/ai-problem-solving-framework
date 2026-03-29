@@ -18,8 +18,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from ..domain.models import ExecutionType
-from .base import BaseExecutor, ExecuteRequest, ExecuteResponse, ExecutorError
+from ..core.domain.models import ExecutionType
+from ..core.executors.base import BaseExecutor, ExecuteRequest, ExecuteResponse, ExecutorError
 
 
 class CLIExecutor(BaseExecutor):

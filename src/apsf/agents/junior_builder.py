@@ -7,10 +7,10 @@ JuniorBuilderAgent — 候補出し・下書き・整理を担当する agent
 
 from __future__ import annotations
 
-from ..domain.models import Role, RunContext, StepResult, ExecutionType
-from ..executors.base import BaseExecutor, ExecuteRequest
+from ..core.domain.models import Role, RunContext, StepResult, ExecutionType
+from ..core.executors.base import BaseExecutor, ExecuteRequest
 from ..prompts.renderer import render_junior_build_prompt
-from .base import AgentError, BaseAgent
+from ..core.agents.base import AgentError, BaseAgent
 
 
 class JuniorBuilderAgent(BaseAgent):

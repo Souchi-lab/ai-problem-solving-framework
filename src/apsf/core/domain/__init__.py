@@ -1,4 +1,4 @@
-from ..core.domain.models import (
+from .models import (
     Role,
     ExecutionType,
     ProviderType,

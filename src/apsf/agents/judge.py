@@ -7,10 +7,10 @@ JudgeAgent — 完了判定・最終評価を担当する agent
 
 from __future__ import annotations
 
-from ..domain.models import Role, RunContext, StepResult, ExecutionType
-from ..executors.base import BaseExecutor, ExecuteRequest
+from ..core.domain.models import Role, RunContext, StepResult, ExecutionType
+from ..core.executors.base import BaseExecutor, ExecuteRequest
 from ..prompts.renderer import render_judge_prompt
-from .base import BaseAgent
+from ..core.agents.base import BaseAgent
 
 
 class JudgeAgent(BaseAgent):

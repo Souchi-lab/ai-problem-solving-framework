@@ -127,10 +127,18 @@ if (-not [string]::IsNullOrWhiteSpace($PromptFile)) {
     $assembledPrompt = Get-Content -LiteralPath $PromptFile -Raw -Encoding UTF8
     Write-Host "[APSF] prompt:    $PromptFile (custom)" -ForegroundColor Cyan
 } else {
-    # Auto-assemble: plan.md + optional build_review.md
-    $planContent = Read-RunFile "plan.md"
-    if ($null -eq $planContent) {
-        Write-Host "[Error] plan.md not found at: $runPath\plan.md" -ForegroundColor Red
+    # ── Context passing policy ────────────────────────────────────────────
+    # 参照渡し (Builder が Read ツールで直接読む):
+    #   plan.md        — メインの build 指示。内容をここに埋め込まない。
+    # 埋め込み (プロンプト文字列に含める):
+    #   builder.md     — ロールガイダンス。ツールで読めないシステムプロンプト相当。
+    #   build_review.md — 再ビルド修正指示。Builder が着手前に内容を知る必要がある。
+    # ─────────────────────────────────────────────────────────────────────
+
+    # plan.md の存在だけ確認する（内容は Builder が Read ツールで直接読む）
+    $planPath = Join-Path $runPath "plan.md"
+    if (-not (Test-Path -LiteralPath $planPath)) {
+        Write-Host "[Error] plan.md not found at: $planPath" -ForegroundColor Red
         Write-Host "  plan.md is required before BUILD_NEEDED." -ForegroundColor DarkGray
         exit 1
     }
@@ -161,9 +169,25 @@ Run directory: $runPath
 
 ---
 
-## Plan (plan.md)
+## Task
 
-$planContent
+**Step 1 — Read plan.md.**
+Use the Read tool to open ``plan.md`` in the run directory above.
+If the file does not exist or cannot be read, stop and report the error. Do not proceed.
+
+**Step 2 — Confirm read (required output).**
+After reading, output exactly this line:
+  plan.md has been read
+
+Then immediately output a 2-3 line summary of the build objective:
+  Summary: <what is being built, key constraints, expected output>
+
+Do not begin any file edits until this output is complete.
+
+**Step 3 — Execute the build.**
+Implement the changes described in ``plan.md``.
+Write all output files directly to disk using your tools.
+Record your decisions and deviations in ``build.md``.
 "@
 
     if ($hasBuildReview) {
@@ -178,9 +202,9 @@ Address these issues before proceeding.
 
 $buildReviewContent
 "@
-        Write-Host "[APSF] inputs:    plan.md + build_review.md" -ForegroundColor Cyan
+        Write-Host "[APSF] inputs:    plan.md (via Read tool) + build_review.md" -ForegroundColor Cyan
     } else {
-        Write-Host "[APSF] inputs:    plan.md (no build_review.md found)" -ForegroundColor Cyan
+        Write-Host "[APSF] inputs:    plan.md (via Read tool)" -ForegroundColor Cyan
     }
 }
 

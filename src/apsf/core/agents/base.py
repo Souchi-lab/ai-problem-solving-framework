@@ -1,12 +1,12 @@
 """
-BaseAgent — すべての agent の共通インターフェース
+BaseAgent - すべての agent の共通インターフェース
 
-設計原則:
-- agent は「何をするか（role）」を担当し、「どうやって実行するか（executor）」は知らない
+設計前提:
+- agent は「何をするか」(role) を表現し、「どうやって実行するか」(executor) は持ち込まない
 - executor を差し替えても agent のコードは変わらない
-- run() が唯一の外部向けインターフェース
+- run() が唯一の共通インターフェース
 
-v0.1 変更: provider → executor に切り替え
+v0.1 前提: provider ではなく executor に切り替え済み
 """
 
 from __future__ import annotations
@@ -19,16 +19,14 @@ from ..executors.base import BaseExecutor
 
 
 class AgentError(Exception):
-    """agent 層の基底例外"""
-    pass
+    """agent 側の基底エラー。"""
 
 
 class BaseAgent(ABC):
     """
     すべての agent の基底クラス。
-
-    role と executor を受け取り、run() で成果物ファイルを生成する。
-    executor を差し替えることで同じ role を CLI / Human / 将来 API で実行できる。
+    role と executor を保持し、run() で成果物ファイルを出力する。
+    executor を切り替えることで同じ role を CLI / Human / 将来 API で実行できる。
     """
 
     def __init__(self, role: Role, executor: BaseExecutor):
@@ -46,13 +44,7 @@ class BaseAgent(ABC):
     @abstractmethod
     def run(self, context: RunContext) -> StepResult:
         """
-        このステップを実行して成果物ファイルを生成する。
-
-        Args:
-            context: 現在の run コンテキスト（run_dir / assignments 等）
-
-        Returns:
-            StepResult: 実行結果（成功/失敗・出力ファイルパス・メモ）
+        このステップを実行して成果物ファイルを出力する。
         """
         ...
 

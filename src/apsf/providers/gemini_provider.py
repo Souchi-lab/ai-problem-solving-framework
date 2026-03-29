@@ -11,7 +11,7 @@ Flash モデルは候補出し・下書き生成に適している。
 
 from __future__ import annotations
 
-from .base import (
+from ..core.providers.base import (
     AuthenticationError,
     BaseProvider,
     GenerateRequest,

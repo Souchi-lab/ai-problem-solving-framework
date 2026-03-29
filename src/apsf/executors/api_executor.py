@@ -13,8 +13,8 @@ v0.1 では実装不要。
 
 from __future__ import annotations
 
-from ..domain.models import ExecutionType
-from .base import BaseExecutor, ExecuteRequest, ExecuteResponse, ExecutorError
+from ..core.domain.models import ExecutionType
+from ..core.executors.base import BaseExecutor, ExecuteRequest, ExecuteResponse, ExecutorError
 
 
 class APIExecutor(BaseExecutor):
@@ -32,7 +32,7 @@ class APIExecutor(BaseExecutor):
                 self._provider = AnthropicProvider(model=model, api_key=api_key)
 
             def execute(self, request: ExecuteRequest) -> ExecuteResponse:
-                from ..providers.base import GenerateRequest
+                from ..core.providers.base import GenerateRequest
                 response = self._provider.generate(GenerateRequest(
                     prompt=request.prompt,
                     system=request.system,

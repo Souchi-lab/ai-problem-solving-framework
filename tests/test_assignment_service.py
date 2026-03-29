@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from apsf.orchestration.assignment_service import AssignmentService
-from apsf.domain.models import Role, ProviderType
+from apsf.core.domain.models import Role, ProviderType
 from apsf.config.settings import Settings
 
 
@@ -119,7 +119,7 @@ def test_load_missing_file_returns_empty_context(
 
 def test_run_context_case_key_and_topic() -> None:
     """RunContext の case_key / topic が正しく抽出されること"""
-    from apsf.domain.models import RunContext
+    from apsf.core.domain.models import RunContext
     ctx = RunContext(
         run_name="2026-03-15_sochi-blocks_sns-post-template",
         run_dir=Path("."),

@@ -10,7 +10,7 @@ Builder role に推奨。高品質なアウトプットが求められる工程�
 
 from __future__ import annotations
 
-from .base import (
+from ..core.providers.base import (
     AuthenticationError,
     BaseProvider,
     GenerateRequest,

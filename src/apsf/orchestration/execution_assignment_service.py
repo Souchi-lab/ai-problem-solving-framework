@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Optional
 
 from ..config.settings import Settings
-from ..domain.models import ExecutionAssignment, ExecutionType, Role, RunContext
-from ..executors.base import BaseExecutor
+from ..core.domain.models import ExecutionAssignment, ExecutionType, Role, RunContext
+from ..core.executors.base import BaseExecutor
 from ..executors.cli_executor import CLIExecutor
 from ..executors.human_executor import HumanExecutor
 from ..executors.api_executor import APIExecutor

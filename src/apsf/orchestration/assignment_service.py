@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 from ..config.settings import Settings
-from ..domain.models import ModelAssignment, ProviderType, Role, RunContext
-from ..providers.base import BaseProvider
+from ..core.domain.models import ModelAssignment, ProviderType, Role, RunContext
+from ..core.providers.base import BaseProvider
 from ..providers.anthropic_provider import AnthropicProvider
 from ..providers.gemini_provider import GeminiProvider
 from ..providers.openai_provider import OpenAIProvider

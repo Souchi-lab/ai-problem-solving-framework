@@ -23,7 +23,7 @@ import pytest
 from typer.testing import CliRunner
 
 from apsf.cli.main import app
-from apsf.providers.base import GenerateResponse
+from apsf.core.providers.base import GenerateResponse
 import apsf.config.settings as settings_module
 
 runner = CliRunner()

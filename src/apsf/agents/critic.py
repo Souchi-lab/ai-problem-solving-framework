@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from ..config.settings import get_settings
 from ..cli.specialist_registry import resolve_critic_specialist
-from ..domain.models import Role, RunContext, StepResult, ExecutionType
-from ..executors.base import BaseExecutor, ExecuteRequest
+from ..core.domain.models import Role, RunContext, StepResult, ExecutionType
+from ..core.executors.base import BaseExecutor, ExecuteRequest
 from ..prompts.renderer import render_review_prompt
-from .base import AgentError, BaseAgent
+from ..core.agents.base import AgentError, BaseAgent
 
 
 class CriticAgent(BaseAgent):

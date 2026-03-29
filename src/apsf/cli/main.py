@@ -10,6 +10,7 @@ CLI - APSF コマンドラインインターフェース（v0.1: CLI/Human 前�
     apsf dry-run <run-name>           pipeline の role/executor マッピングを表示
     apsf check-env                    環境変数の設定状況を確認（API は optional）
     apsf show-execution-plan <run>    execution-assignment.md の内容を表示
+    apsf init-followup <slug>         followups/ に4ファイルのスケルトンを生成
 
 使用例:
     apsf start-run sochi-blocks_sns-post-template   # 日付が自動付与される
@@ -157,6 +158,359 @@ def init_run(
         raise typer.Exit(1)
 
 
+# ── init-followup テンプレート定数 ──────────────────────────────────────────
+
+_FOLLOWUP_GOAL_TEMPLATE = """\
+# Goal
+
+---
+
+## Follow-up Context
+
+- Parent series: <!-- どの実験系列か -->
+- Previous result: <!-- 直前 result の一言まとめ -->
+- New trigger: <!-- なぜこれをやるか -->
+- Scope limit: <!-- 変更対象の上限 -->
+- Non-goals: <!-- 今回やらないこと -->
+
+---
+
+## Goal Statement
+
+<!-- 今回の主語を1文で固定する。何を確かめるか。二層目的がある場合は明示する。 -->
+
+---
+
+## Background
+
+<!-- なぜこれをやるか。前回 result / 外部トリガーを記録する。 -->
+
+---
+
+## Success Criteria
+
+1.
+2.
+3.
+
+---
+
+## Expected Outputs
+
+-
+
+---
+
+## Non-Goals
+
+-
+
+---
+
+## Constraints
+
+- <!-- 対象を広げない条件 -->
+- <!-- 必要な確認だけに絞る条件 -->
+- <!-- 次 trigger に自然につながる条件 -->
+
+---
+
+## Notes For Planner
+
+<!-- Planner が明確化すべきこと / トレードオフ / 優先順位判断 -->
+"""
+
+_FOLLOWUP_PLAN_TEMPLATE = """\
+# Plan
+
+---
+
+## Follow-up Context
+
+- Parent series:
+- Previous result:
+- New trigger:
+- Scope limit:
+- Non-goals:
+
+---
+
+## Run Metadata
+
+- Follow-up:
+- Goal:
+- Output focus:
+- Non-goal reminder:
+
+---
+
+## Goal Readiness Check
+
+-
+-
+
+Decision: Proceed / Block
+
+---
+
+## Execution Intent
+
+### 表層:
+
+### 裏層:
+
+---
+
+## Problem Structure
+
+<!-- 問題の構造分解 -->
+
+---
+
+## Selected Approach
+
+Approach:
+
+Reasoning:
+
+---
+
+## Scope Policy
+
+この follow-up に含めるもの:
+
+-
+
+この follow-up に含めないもの:
+
+-
+
+---
+
+## Deliverables
+
+-
+
+---
+
+## Review Checklist
+
+-
+
+---
+
+## Planned Output Shape
+
+<!-- result の構成を先に定義する -->
+
+---
+
+## Assumptions & Open Questions
+
+Assumptions:
+
+-
+
+Open questions:
+
+-
+
+---
+
+## What This Follow-up Decides
+
+-
+
+---
+
+## What This Follow-up Does Not Decide
+
+-
+"""
+
+_FOLLOWUP_REVIEW_TEMPLATE = """\
+# Review
+
+---
+
+## Follow-up Context
+
+- Follow-up:
+- Plan decision:
+
+---
+
+## Gate Questions
+
+1. <!-- 二層目的は崩れていないか -->
+
+2. <!-- scope が広がっていないか -->
+
+3. <!-- result で判断できる状態になっているか -->
+
+---
+
+## Decision
+
+Proceed / Block / Revise
+
+---
+
+## Notes
+
+<!-- review での気づき・修正点 -->
+"""
+
+_FOLLOWUP_RESULT_TEMPLATE = """\
+# Result
+
+---
+
+## Status
+
+<!-- Completed / Partial / Blocked -->
+
+---
+
+## 1. 実装差分サマリー
+
+<!-- 変更ファイル・変更量 -->
+
+---
+
+## 2. 評価
+
+<!-- goal の Success Criteria に対して -->
+
+---
+
+## 3. 採用判断
+
+<!-- 採用 / 非採用 / 条件付き採用 -->
+
+---
+
+## 4. 形式評価
+
+<!-- 4点セットの今回タスクへの適合度 -->
+
+---
+
+## 5. Closing
+
+### Stable Baseline
+
+<!-- この follow-up で確定したこと -->
+
+### Open Conditional
+
+<!-- 条件次第で変わりうること -->
+
+### Next Trigger
+
+<!-- 次の follow-up を起動するとしたら何か -->
+"""
+
+_FOLLOWUP_FILES: dict[str, str] = {
+    "goal.md":   _FOLLOWUP_GOAL_TEMPLATE,
+    "plan.md":   _FOLLOWUP_PLAN_TEMPLATE,
+    "review.md": _FOLLOWUP_REVIEW_TEMPLATE,
+    "result.md": _FOLLOWUP_RESULT_TEMPLATE,
+}
+
+_FOLLOWUPS_DIR = Path("framework") / "experimental" / "redesign" / "followups"
+
+
+@app.command("init-followup")
+def init_followup(
+    slug: str = typer.Argument(..., help="Follow-up name (e.g. twitter-tag-improvement)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files"),
+) -> None:
+    """framework/experimental/redesign/followups/<slug>/ に4ファイルのスケルトンを生成する。"""
+    from ..config.settings import get_settings
+
+    settings = get_settings()
+    followup_dir = settings.framework_root / _FOLLOWUPS_DIR / slug
+
+    if followup_dir.exists() and not force:
+        typer.echo(
+            f"[ERROR] Already exists: {followup_dir}\n"
+            "  Use --force to overwrite.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    followup_dir.mkdir(parents=True, exist_ok=True)
+
+    created: list[str] = []
+    skipped: list[str] = []
+
+    for filename, content in _FOLLOWUP_FILES.items():
+        filepath = followup_dir / filename
+        if filepath.exists() and not force:
+            skipped.append(filename)
+            continue
+        filepath.write_text(content, encoding="utf-8")
+        created.append(filename)
+
+    typer.echo(f"[OK] Follow-up initialized: {followup_dir}")
+    if created:
+        typer.echo(f"  Created: {', '.join(created)}")
+    if skipped:
+        typer.echo(f"  Skipped (already exists): {', '.join(skipped)}")
+    typer.echo("\nNext steps:")
+    typer.echo("  0. Run: apsf list-followups        <- check existing series & previous results")
+    typer.echo(f"  1. Edit {followup_dir}/goal.md   <- what to confirm")
+    typer.echo(f"  2. Edit {followup_dir}/plan.md   <- how to approach it")
+    typer.echo(f"  3. Build, then fill {followup_dir}/result.md")
+
+
+@app.command("list-followups")
+def list_followups() -> None:
+    """framework/experimental/redesign/followups/ 配下の follow-up 一覧を表示する。"""
+    from ..config.settings import get_settings
+
+    settings = get_settings()
+    followups_dir = settings.framework_root / _FOLLOWUPS_DIR
+
+    if not followups_dir.exists():
+        typer.echo(f"[ERROR] Follow-ups directory not found: {followups_dir}", err=True)
+        raise typer.Exit(1)
+
+    followup_dirs = sorted(
+        [path for path in followups_dir.iterdir() if path.is_dir()],
+        key=lambda path: path.name.lower(),
+    )
+
+    if not followup_dirs:
+        typer.echo(f"[INFO] No follow-ups found in: {followups_dir}")
+        return
+
+    expected_files = ("goal.md", "plan.md", "review.md", "result.md")
+
+    def _followup_status(d: Path) -> str:
+        has_result = (d / "result.md").exists()
+        has_review = (d / "review.md").exists()
+        if has_result and has_review:
+            return "complete"
+        if has_result:
+            return "complete (review-skipped)"
+        return "in-progress"
+
+    typer.echo(f"Follow-ups: {followups_dir}")
+    typer.echo("=" * 72)
+
+    for followup_dir in followup_dirs:
+        present = [name for name in expected_files if (followup_dir / name).exists()]
+        missing = [name for name in expected_files if name not in present]
+        status = _followup_status(followup_dir)
+
+        typer.echo(f"- {followup_dir.name}  [{status}]")
+        typer.echo(f"  Files: {', '.join(present) if present else '(none)'}")
+        if missing and status == "in-progress":
+            typer.echo(f"  Missing: {', '.join(missing)}")
+
+
 @app.command("show-structure")
 def show_structure() -> None:
     """framework / cases / runs / workspaces / src の役割を表示する。"""
@@ -210,7 +564,7 @@ def dry_run_cmd(
     """
     from ..config.settings import get_settings
     from ..orchestration.execution_assignment_service import ExecutionAssignmentService
-    from ..domain.models import Role, ExecutionType
+    from ..core.domain.models import Role, ExecutionType
     from ..storage.run_repository import RunRepository
 
     settings = get_settings()
@@ -907,7 +1261,7 @@ def generate_setup_cmd(
     from ..orchestration.act_service import ActError, ActService
     from ..orchestration.phase_detector import Phase, PhaseDetector
     from ..prompts.renderer import render_setup_prompt
-    from ..providers.base import GenerateRequest, ProviderError
+    from ..core.providers.base import GenerateRequest, ProviderError
     from ..storage.run_repository import RunRepository
 
     settings = get_settings()

@@ -13,8 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from ..domain.models import ExecutionType, Role
-from .base import BaseExecutor, ExecuteRequest, ExecuteResponse
+from ..core.domain.models import ExecutionType, Role
+from ..core.executors.base import BaseExecutor, ExecuteRequest, ExecuteResponse
 
 
 # role ごとの出力ファイル名

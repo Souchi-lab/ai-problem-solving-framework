@@ -17,6 +17,13 @@ This package exists to define and review a reconstruction direction based on:
 - `experimental` as a discardable redesign space
 - viewer as an independent support layer rather than a canonical record authority
 
+See also: [GUI Operation North Star](./gui-operation-north-star.md)
+
+This note defines the longer-term operating target behind the current redesign
+work: GUI-first, human-led operation where run type, required checks, and next
+triggers can eventually be handled through guided interaction rather than
+manual document assembly.
+
 ---
 
 ## Files
@@ -32,6 +39,9 @@ This package exists to define and review a reconstruction direction based on:
 - `result.md`
   Records the current decision:
   Accept with Minor Revisions, with safe interpretation and next-step boundaries.
+
+Follow-up trial documents now live under `followups/` so that narrow,
+topic-specific packages do not crowd the reconstruction package root.
 
 ---
 

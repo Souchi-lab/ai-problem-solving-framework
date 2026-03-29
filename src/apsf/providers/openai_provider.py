@@ -11,7 +11,7 @@ Critic は Builder（Anthropic）と別系統モデルを使うことで独立�
 
 from __future__ import annotations
 
-from .base import (
+from ..core.providers.base import (
     AuthenticationError,
     BaseProvider,
     GenerateRequest,

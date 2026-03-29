@@ -16,7 +16,7 @@ import pytest
 from pathlib import Path
 
 from apsf.orchestration.execution_assignment_service import ExecutionAssignmentService
-from apsf.domain.models import ExecutionAssignment, ExecutionType, Role, RunContext
+from apsf.core.domain.models import ExecutionAssignment, ExecutionType, Role, RunContext
 from apsf.executors.cli_executor import CLIExecutor
 from apsf.executors.human_executor import HumanExecutor
 from apsf.config.settings import Settings
