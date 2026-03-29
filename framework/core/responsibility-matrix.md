@@ -1,11 +1,5 @@
 # Responsibility Matrix
 
-> **この文書は `framework/core/` に移動しました。**
-> 正本: [framework/core/responsibility-matrix.md](core/responsibility-matrix.md)
->
-> この旧位置のファイルは導線維持のために残しています。
-> 参照・更新は `framework/core/responsibility-matrix.md` に対して行ってください。
-
 ---
 
 ## Purpose
