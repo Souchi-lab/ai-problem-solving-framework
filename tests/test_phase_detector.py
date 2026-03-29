@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from apsf.orchestration.phase_detector import Phase, PhaseDetector
+from apsf.legacy.orchestration.phase_detector import Phase, PhaseDetector
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 from ..core.executors.base import BaseExecutor, ExecuteRequest, ExecuteResponse, ExecutorError
-from .cli_executor import CLIExecutor
-from .human_executor import HumanExecutor
-from .api_executor import APIExecutor
+from ..legacy.executors.cli_executor import CLIExecutor
+from ..legacy.executors.human_executor import HumanExecutor
+from ..legacy.executors.api_executor import APIExecutor
 
 __all__ = [
     "BaseExecutor",

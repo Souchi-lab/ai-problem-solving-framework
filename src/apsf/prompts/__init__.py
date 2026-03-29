@@ -1,5 +1,5 @@
-from .loader import PromptLoader
-from .renderer import (
+from ..legacy.prompts.loader import PromptLoader
+from ..legacy.prompts.renderer import (
     render_plan_prompt,
     render_junior_build_prompt,
     render_build_prompt,

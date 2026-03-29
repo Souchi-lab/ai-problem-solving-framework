@@ -23,18 +23,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from ..config.settings import Settings, get_settings
+from ..legacy.config.settings import Settings, get_settings
 from ..core.domain.models import Role
 from ..cli.specialist_registry import resolve_critic_specialist, resolve_planner_specialist
-from ..orchestration.next_instruction_builder import NextInstructionBuilder
-from ..orchestration.phase_detector import (
+from ..legacy.orchestration.next_instruction_builder import NextInstructionBuilder
+from ..legacy.orchestration.phase_detector import (
     AUTO_OWNED_PHASES,
     HUMAN_OWNED_PHASES,
     Phase,
     PhaseDetector,
     PhaseInfo,
 )
-from ..prompts.renderer import render_build_prompt, render_plan_prompt, render_review_prompt
+from ..legacy.prompts.renderer import render_build_prompt, render_plan_prompt, render_review_prompt
 from ..core.providers.base import BaseProvider, GenerateRequest, ProviderError
 
 

@@ -11,12 +11,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from ..config.settings import Settings
+from ..legacy.config.settings import Settings
 from ..core.domain.models import ExecutionAssignment, ExecutionType, Role, RunContext
 from ..core.executors.base import BaseExecutor
-from ..executors.cli_executor import CLIExecutor
-from ..executors.human_executor import HumanExecutor
-from ..executors.api_executor import APIExecutor
+from ..legacy.executors.cli_executor import CLIExecutor
+from ..legacy.executors.human_executor import HumanExecutor
+from ..legacy.executors.api_executor import APIExecutor
 
 
 class ExecutionAssignmentService:

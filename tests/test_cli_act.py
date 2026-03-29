@@ -24,7 +24,7 @@ from typer.testing import CliRunner
 
 from apsf.cli.main import app
 from apsf.core.providers.base import GenerateResponse
-import apsf.config.settings as settings_module
+import apsf.legacy.config.settings as settings_module
 
 runner = CliRunner()
 

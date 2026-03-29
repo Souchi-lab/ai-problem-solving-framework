@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from apsf.orchestration.transcript_generator import (
+from apsf.legacy.orchestration.transcript_generator import (
     TRANSCRIPT_SOURCE_ORDER,
     TranscriptGenerator,
 )

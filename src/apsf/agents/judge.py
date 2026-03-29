@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..core.domain.models import Role, RunContext, StepResult, ExecutionType
 from ..core.executors.base import BaseExecutor, ExecuteRequest
-from ..prompts.renderer import render_judge_prompt
+from ..legacy.prompts.renderer import render_judge_prompt
 from ..core.agents.base import BaseAgent
 
 

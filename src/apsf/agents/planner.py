@@ -4,11 +4,11 @@ PlannerAgent - planner role implementation
 
 from __future__ import annotations
 
-from ..config.settings import get_settings
+from ..legacy.config.settings import get_settings
 from ..cli.specialist_registry import resolve_planner_specialist
 from ..core.domain.models import ExecutionType, Role, RunContext, StepResult
 from ..core.executors.base import BaseExecutor, ExecuteRequest
-from ..prompts.renderer import render_plan_prompt
+from ..legacy.prompts.renderer import render_plan_prompt
 from ..core.agents.base import AgentError, BaseAgent
 
 

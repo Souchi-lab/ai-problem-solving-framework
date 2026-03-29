@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from apsf.orchestration.assignment_service import AssignmentService
 from apsf.core.domain.models import Role, ProviderType
-from apsf.config.settings import Settings
+from apsf.legacy.config.settings import Settings
 
 
 @pytest.fixture

@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from ..config.settings import Settings
+from ..legacy.config.settings import Settings
 from ..core.domain.models import ModelAssignment, ProviderType, Role, RunContext
 from ..core.providers.base import BaseProvider
 from ..legacy.providers.anthropic_provider import AnthropicProvider

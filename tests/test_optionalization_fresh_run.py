@@ -28,7 +28,7 @@ from typer.testing import CliRunner
 
 from apsf.cli.main import app
 from apsf.legacy.storage.run_repository import RunRepository, STANDARD_FILES
-import apsf.config.settings as settings_module
+import apsf.legacy.config.settings as settings_module
 
 runner = CliRunner()
 

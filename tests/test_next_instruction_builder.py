@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from apsf.orchestration.phase_detector import Phase, PhaseDetector
-from apsf.orchestration.next_instruction_builder import NextInstruction, NextInstructionBuilder
+from apsf.legacy.orchestration.phase_detector import Phase, PhaseDetector
+from apsf.legacy.orchestration.next_instruction_builder import NextInstruction, NextInstructionBuilder
 
 
 # ---------------------------------------------------------------------------

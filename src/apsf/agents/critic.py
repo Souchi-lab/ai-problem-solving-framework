@@ -7,11 +7,11 @@ CriticAgent — レビュー・問題指摘を担当する agent
 
 from __future__ import annotations
 
-from ..config.settings import get_settings
+from ..legacy.config.settings import get_settings
 from ..cli.specialist_registry import resolve_critic_specialist
 from ..core.domain.models import Role, RunContext, StepResult, ExecutionType
 from ..core.executors.base import BaseExecutor, ExecuteRequest
-from ..prompts.renderer import render_review_prompt
+from ..legacy.prompts.renderer import render_review_prompt
 from ..core.agents.base import AgentError, BaseAgent
 
 

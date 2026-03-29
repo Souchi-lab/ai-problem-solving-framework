@@ -28,8 +28,8 @@ from uuid import uuid4
 
 import pytest
 
-from apsf.orchestration.phase_detector import Phase, PhaseDetector, PhaseInfo
-from apsf.orchestration.next_instruction_builder import NextInstructionBuilder
+from apsf.legacy.orchestration.phase_detector import Phase, PhaseDetector, PhaseInfo
+from apsf.legacy.orchestration.next_instruction_builder import NextInstructionBuilder
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 _FRAMEWORK_TEMPLATES = _PROJECT_ROOT / "framework" / "templates"

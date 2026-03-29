@@ -1,4 +1,4 @@
-from apsf.prompts.renderer import render_plan_prompt, render_review_prompt
+from apsf.legacy.prompts.renderer import render_plan_prompt, render_review_prompt
 
 
 def test_render_plan_prompt_requires_raw_markdown_only() -> None:

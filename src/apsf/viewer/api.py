@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from apsf.orchestration.phase_detector import PhaseDetector
+from apsf.legacy.orchestration.phase_detector import PhaseDetector
 from apsf.legacy.storage.run_repository import RunRepository
 from apsf.viewer.viewer_db import ViewerDB
 
