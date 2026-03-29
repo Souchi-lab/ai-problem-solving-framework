@@ -130,7 +130,7 @@ def init_run(
 ) -> None:
     """指定した名前で runs/ に新しい run ディレクトリを作成する。"""
     from ..config.settings import get_settings
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -565,7 +565,7 @@ def dry_run_cmd(
     from ..config.settings import get_settings
     from ..orchestration.execution_assignment_service import ExecutionAssignmentService
     from ..core.domain.models import Role, ExecutionType
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -654,7 +654,7 @@ def show_execution_plan(
     """
     from ..config.settings import get_settings
     from ..orchestration.execution_assignment_service import ExecutionAssignmentService
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -698,7 +698,7 @@ def generate_transcript(
     実際の生成は人間（または AI）が行う。
     """
     from ..config.settings import get_settings
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -841,7 +841,7 @@ def start_run_cmd(
     from datetime import date
 
     from ..config.settings import get_settings
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -921,7 +921,7 @@ def next_cmd(
     from ..config.settings import get_settings
     from ..orchestration.phase_detector import PhaseDetector
     from ..orchestration.next_instruction_builder import NextInstructionBuilder
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -982,7 +982,7 @@ def transcript_cmd(
     """
     from ..config.settings import get_settings
     from ..orchestration.transcript_generator import TranscriptGenerator
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -1078,7 +1078,7 @@ def write_phase_cmd(
     from ..config.settings import get_settings
     from ..orchestration.next_instruction_builder import NextInstructionBuilder
     from ..orchestration.phase_detector import Phase, PhaseDetector
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
     from .io import read_stdin_utf8
 
     settings = get_settings()
@@ -1262,7 +1262,7 @@ def generate_setup_cmd(
     from ..orchestration.phase_detector import Phase, PhaseDetector
     from ..prompts.renderer import render_setup_prompt
     from ..core.providers.base import GenerateRequest, ProviderError
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -1391,7 +1391,7 @@ def act_cmd(
     """
     from ..config.settings import get_settings
     from ..orchestration.act_service import ActError, ActService
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -1628,7 +1628,7 @@ def build_cmd(
     """
     from ..config.settings import get_settings
     from ..orchestration.phase_detector import PhaseDetector
-    from ..storage.run_repository import RunRepository
+    from ..legacy.storage.run_repository import RunRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)

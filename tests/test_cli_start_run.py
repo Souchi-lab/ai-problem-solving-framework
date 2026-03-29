@@ -20,7 +20,7 @@ import pytest
 from typer.testing import CliRunner
 
 from apsf.cli.main import app
-from apsf.storage.run_repository import RunRepository
+from apsf.legacy.storage.run_repository import RunRepository
 import apsf.config.settings as settings_module
 
 runner = CliRunner()

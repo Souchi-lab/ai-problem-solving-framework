@@ -15,9 +15,9 @@ from typing import Optional
 from ..config.settings import Settings
 from ..core.domain.models import ModelAssignment, ProviderType, Role, RunContext
 from ..core.providers.base import BaseProvider
-from ..providers.anthropic_provider import AnthropicProvider
-from ..providers.gemini_provider import GeminiProvider
-from ..providers.openai_provider import OpenAIProvider
+from ..legacy.providers.anthropic_provider import AnthropicProvider
+from ..legacy.providers.gemini_provider import GeminiProvider
+from ..legacy.providers.openai_provider import OpenAIProvider
 
 
 class AssignmentService:

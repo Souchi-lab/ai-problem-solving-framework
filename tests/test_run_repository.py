@@ -7,7 +7,7 @@ RunRepository の run 初期化・命名規則検証・ステータス取得を�
 import pytest
 from pathlib import Path
 
-from apsf.storage.run_repository import RunRepository, STANDARD_FILES
+from apsf.legacy.storage.run_repository import RunRepository, STANDARD_FILES
 
 
 @pytest.fixture
@@ -286,7 +286,7 @@ class TestChildRunStatus:
         assert repo.child_run_exists(_PARENT, _CHILD) is False
 
     def test_get_child_run_status_keys(self, repo: RunRepository) -> None:
-        from apsf.storage.run_repository import STANDARD_FILES
+        from apsf.legacy.storage.run_repository import STANDARD_FILES
         repo.init_run(_PARENT)
         repo.init_child_run(_PARENT, _CHILD)
         status = repo.get_child_run_status(_PARENT, _CHILD)

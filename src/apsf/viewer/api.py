@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from apsf.orchestration.phase_detector import PhaseDetector
-from apsf.storage.run_repository import RunRepository
+from apsf.legacy.storage.run_repository import RunRepository
 from apsf.viewer.viewer_db import ViewerDB
 
 app = FastAPI(title="APSF Viewer API")

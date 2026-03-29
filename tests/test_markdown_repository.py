@@ -7,7 +7,7 @@ MarkdownRepository の read/write/exists/list_files を検証する。
 import pytest
 from pathlib import Path
 
-from apsf.storage.markdown_repository import MarkdownRepository
+from apsf.legacy.storage.markdown_repository import MarkdownRepository
 
 
 @pytest.fixture

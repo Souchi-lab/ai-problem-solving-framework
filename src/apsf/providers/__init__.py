@@ -1,7 +1,7 @@
 from ..core.providers.base import BaseProvider, GenerateRequest, GenerateResponse
-from .anthropic_provider import AnthropicProvider
-from .openai_provider import OpenAIProvider
-from .gemini_provider import GeminiProvider
+from ..legacy.providers.anthropic_provider import AnthropicProvider
+from ..legacy.providers.openai_provider import OpenAIProvider
+from ..legacy.providers.gemini_provider import GeminiProvider
 
 __all__ = [
     "BaseProvider",

@@ -281,9 +281,9 @@ class ActService:
             ActError: API キーが一切設定されていない場合
         """
         from ..orchestration.assignment_service import AssignmentService
-        from ..providers.anthropic_provider import AnthropicProvider
-        from ..providers.gemini_provider import GeminiProvider
-        from ..providers.openai_provider import OpenAIProvider
+        from ..legacy.providers.anthropic_provider import AnthropicProvider
+        from ..legacy.providers.gemini_provider import GeminiProvider
+        from ..legacy.providers.openai_provider import OpenAIProvider
 
         assignment_path = run_dir / "model-assignment.md"
         role = _PHASE_TO_ROLE.get(phase)

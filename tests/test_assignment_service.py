@@ -87,7 +87,7 @@ def test_parse_judge_is_human(tmp_path: Path, service: AssignmentService) -> Non
 
 def test_create_provider_anthropic(tmp_path: Path, service: AssignmentService) -> None:
     """Builder アサインから AnthropicProvider が生成されること"""
-    from apsf.providers.anthropic_provider import AnthropicProvider
+    from apsf.legacy.providers.anthropic_provider import AnthropicProvider
 
     path = tmp_path / "model-assignment.md"
     path.write_text(SAMPLE_ASSIGNMENT_MD, encoding="utf-8")

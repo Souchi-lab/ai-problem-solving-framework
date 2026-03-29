@@ -28,7 +28,7 @@ class APIExecutor(BaseExecutor):
     実装例（v0.2+）:
         class AnthropicAPIExecutor(APIExecutor):
             def __init__(self, model: str, api_key: str):
-                from ..providers.anthropic_provider import AnthropicProvider
+                from ..legacy.providers.anthropic_provider import AnthropicProvider
                 self._provider = AnthropicProvider(model=model, api_key=api_key)
 
             def execute(self, request: ExecuteRequest) -> ExecuteResponse:
