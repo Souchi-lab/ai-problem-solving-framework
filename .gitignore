@@ -64,9 +64,16 @@ workspaces/*/*
 
 # ----- Local temp / scratch ---------------------------------
 .tmp/
+.tmp-*
+.tmp-*/
 .tmp-pytest/
 tmp*/
 .pytest-tmp/
 .pytest-tmp*/
 .pytest_tmp/
+.playwright-mcp/
 viewer.db
+
+# ----- Local probe artifacts --------------------------------
+agent-os-investment-check.png
+jquants_*.json
