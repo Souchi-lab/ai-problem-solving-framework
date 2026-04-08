@@ -1,13 +1,40 @@
 # APSF Viewer Priority Index
-# This file controls the sorting and badges in the Viewer.
+# This file controls run ordering and priority badges in the Viewer.
+# Current stance:
+# - investment project c4 (backtest design) and FW reconstruction running in parallel
+# - reconstruction child runs: C1 transition-ownership → C2 → C3 → C4 (sequential)
+# - revisit framework/improvement-notes/2026-04-07_child-run-dependency-injection.md
+#   in reconstruction C3, not as a standalone patch
 
 runs:
-  2026-03-25-001_sochi-2d-stock-difficulty-calibration:
+  2026-04-08-002_work_fw-backend-reconstruction:
     priority: Now
-    reason: "Current main focus. Prioritize SoChi BLOCKS 2D progress."
-  2026-03-24-012_fw-improvement_viewer-browser-and-db-workflow-test:
+    reason: "FW backend + Viewer reconstruction. C1 (transition-ownership) is active. Running in parallel with investment project c4."
+
+  2026-04-04-001_investment-project_v0-1:
+    priority: Now
+    reason: "c4 (backtest design) in progress. Running in parallel with FW reconstruction."
+
+  2026-04-04-091_fw-improvement_act-driven-assignment-resolution:
     priority: Next
-    reason: "Keep as follow-up. Close remaining human scenarios after SoChi BLOCKS 2D work."
+    reason: "Reference run for reconstruction. Useful when consolidating act/write-phase/wrapper transition ownership."
+
+  2026-04-04-090_fw-improvement_agent-os-assignment-visibility-surface:
+    priority: Next
+    reason: "Reference run for reconstruction. Useful when simplifying Agent OS, assignment visibility, and parent/child targeting."
+
+  2026-04-02-001_sochi2d-preview-probe-and-improvement-harvest:
+    priority: Later
+    reason: "Still valuable, but behind the investment project and the planned APSF reconstruction work."
+
+  2026-04-01-053_fw-improvement_agent-os-permission-matrix-engine:
+    priority: Later
+    reason: "Closed FW run kept for history. Reference only unless reconstruction reaches permission-model cleanup."
+
+  2026-03-24-012_fw-improvement_viewer-browser-and-db-workflow-test:
+    priority: Later
+    reason: "Legacy viewer workflow probe. Useful for regression context, but lower priority than current reconstruction targets."
+
   2026-03-24-014_fw-improvement_viewer-codex-architect-bridge-implementation:
     priority: Later
-    reason: "Viewer bridge implementation is in good shape. Return only if validation or polish is needed."
+    reason: "Older Viewer bridge work. Keep as background reference only."

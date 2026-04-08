@@ -1,0 +1,10 @@
+{
+  "execution_modes": {
+    "act": "wrapper"
+  },
+  "wrapper_backends": {
+    "act": "codex-cli",
+    "build": "codex-cli"
+  },
+  "build_max_turns": 30
+}
