@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..domain.models import Role, RunContext, StepResult
 from ..executors.base import BaseExecutor
+from ..storage.artifact_repository import ArtifactRepository
 
 
 class AgentError(Exception):
@@ -32,6 +33,7 @@ class BaseAgent(ABC):
     def __init__(self, role: Role, executor: BaseExecutor):
         self._role = role
         self._executor = executor
+        self._artifact_repo = ArtifactRepository()
 
     @property
     def role(self) -> Role:
@@ -55,9 +57,8 @@ class BaseAgent(ABC):
         return ""
 
     def _write_file(self, path: Path, content: str) -> None:
-        """ファイルに書き込む。親ディレクトリがない場合は作成する。"""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        """ファイルに書き込む。ArtifactRepository 経由で safe write する。"""
+        self._artifact_repo.write(path, content)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(role={self._role}, executor={self._executor})"

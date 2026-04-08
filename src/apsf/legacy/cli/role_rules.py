@@ -1,16 +1,21 @@
 """
-Role boundary rules — APSF runtime enforcement.
+Role boundary rules — APSF runtime enforcement adapter.
 
-Single source of truth for which roles may write which artifacts at runtime.
-Referenced by apsf write-phase (hard-stop) and apsf act (preflight warning).
+ownership policy の canonical 定義は core/domain/ownership.py にある。
+このモジュールはその policy を読んで runtime enforcement を行う adapter 層。
+
+以前の ROLE_FORBIDDEN ハードコード�� ownership.py の ARTIFACT_OWNERSHIP_DEFAULTS から
+導出する形に変更した。二重正本を防ぐため、ここでは policy の再定義をしない。
 
 Design doc: framework/responsibility-matrix.md
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+
+from ...core.domain.ownership import is_allowed_writer, get_policy
 
 
 class GuardSeverity(str, Enum):
@@ -26,30 +31,6 @@ class RoleBoundaryViolation:
     message:       str
     override_hint: str = ""
 
-
-# ---------------------------------------------------------------------------
-# Forbidden artifacts per role
-#
-# Source: framework/responsibility-matrix.md — Role Matrix "Must Not Create"
-# Initial scope: review.md / improve.md / result.md (run-021 failure pattern).
-# ---------------------------------------------------------------------------
-ROLE_FORBIDDEN: dict[str, list[tuple[str, GuardSeverity]]] = {
-    "Builder": [
-        ("review.md",  GuardSeverity.HARD_STOP),
-        ("improve.md", GuardSeverity.HARD_STOP),
-        ("result.md",  GuardSeverity.HARD_STOP),
-    ],
-    "Planner": [
-        ("build.md",   GuardSeverity.HARD_STOP),
-        ("review.md",  GuardSeverity.HARD_STOP),
-        ("improve.md", GuardSeverity.HARD_STOP),
-        ("result.md",  GuardSeverity.HARD_STOP),
-    ],
-    "Critic": [
-        ("improve.md", GuardSeverity.HARD_STOP),
-        ("result.md",  GuardSeverity.HARD_STOP),
-    ],
-}
 
 # Phase value → canonical role name.
 # Mirrors phase_detector.AUTO_OWNED_PHASES / act_service._PHASE_TO_ROLE.
@@ -70,35 +51,66 @@ def check_role_boundary(
     target_file: str,
     *,
     force: bool = False,
+    override_reason: Optional[str] = None,
 ) -> Optional[RoleBoundaryViolation]:
     """
     Check whether role is allowed to write target_file.
 
+    ownership policy (core/domain/ownership.py) を参照して判定する。
+    policy 未定義の artifact はチェックしない（寛容）。
+
     Returns:
         None                              — allowed (no violation)
-        RoleBoundaryViolation (HARD_STOP) — blocked; caller must exit unless force=True
-        RoleBoundaryViolation (WARNING)   — allowed but flagged (force=True downgrade)
+        RoleBoundaryViolation (HARD_STOP) — blocked
+        RoleBoundaryViolation (WARNING)   — allowed but flagged
 
-    When force=True:
-        HARD_STOP is downgraded to WARNING.
-        Caller should log the override for auditability.
+    force=True の semantics:
+        override_reason がある場合のみ HARD_STOP を WARNING に降格する。
+        override_reason が空の場合は override 自体を HARD_STOP とし、
+        理由未記録の override を通常フローで通さない。
     """
-    for fname, severity in ROLE_FORBIDDEN.get(role, []):
-        if fname == target_file:
-            effective = GuardSeverity.WARNING if force else severity
+    if is_allowed_writer(role, target_file):
+        return None
+
+    policy = get_policy(target_file)
+    owner = policy.owner_role if policy else "unknown"
+
+    if force:
+        if override_reason:
+            hint = f"  Override active (--force). Reason: {override_reason}"
+            msg = (
+                f"[Role-Boundary] {role} is not in allowed_writers for {target_file} "
+                f"(owner: {owner}). Override applied with reason: {override_reason}"
+            )
+            severity = GuardSeverity.WARNING
+        else:
             hint = (
-                "  Override active (--force). Log the reason for this override."
-                if force
-                else "  To override (human judgment only): add --force and record your reason."
+                "  Override blocked. Add --force-reason <reason> "
+                "to record the override rationale."
             )
-            return RoleBoundaryViolation(
-                role=role,
-                target_file=target_file,
-                severity=effective,
-                message=(
-                    f"[Role-Boundary] {role} must not write {target_file}. "
-                    f"See framework/responsibility-matrix.md for canonical writers."
-                ),
-                override_hint=hint,
+            msg = (
+                f"[Role-Boundary] {role} is not in allowed_writers for {target_file} "
+                f"(owner: {owner}). --force-reason is required for override."
             )
-    return None
+            severity = GuardSeverity.HARD_STOP
+        return RoleBoundaryViolation(
+            role=role,
+            target_file=target_file,
+            severity=severity,
+            message=msg,
+            override_hint=hint,
+        )
+
+    return RoleBoundaryViolation(
+        role=role,
+        target_file=target_file,
+        severity=GuardSeverity.HARD_STOP,
+        message=(
+            f"[Role-Boundary] {role} must not write {target_file} "
+            f"(owner: {owner}, allowed: {policy.allowed_writers if policy else 'undefined'}). "
+            "See framework/responsibility-matrix.md for canonical writers."
+        ),
+        override_hint=(
+            "  To override (human judgment only): add --force and --force-reason <reason>."
+        ),
+    )

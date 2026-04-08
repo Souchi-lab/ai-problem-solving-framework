@@ -1,20 +1,26 @@
 """
-HandoffService — handoff.md の生成補助
+HandoffService — handoff.json 正本 + handoff.md view の生成
 
 role 間の受け渡しを構造化する。
+handoff.json が canonical source。handoff.md は render / view として残る。
 「何が決まっているか」「何が未決か」「次の role がすること」を整理する。
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 from ...core.domain.models import Handoff, Role
+from ...core.domain.enums import HandoffStatus
+from ...core.handoff.handoff_record import HandoffRecord, _now_iso
+from ...core.handoff.handoff_repository import HandoffRepository
+from ...core.storage.artifact_repository import ArtifactRepository
 
 
 class HandoffService:
     """
-    Handoff オブジェクトを handoff.md として保存する。
+    Handoff オブジェクトを handoff.json（正本）+ handoff.md（view）として保存する。
 
     使用例:
         service = HandoffService()
@@ -29,11 +35,75 @@ class HandoffService:
         service.write(handoff, run_dir / "handoff.md")
     """
 
-    def write(self, handoff: Handoff, path: Path) -> None:
-        """Handoff オブジェクトを handoff.md として書き出す。"""
+    def __init__(self) -> None:
+        self._artifact_repo = ArtifactRepository()
+
+    def write(self, handoff: Handoff, path: Path) -> HandoffRecord:
+        """
+        Handoff オブジェクトを handoff.json（正本）と handoff.md（view）として書き出す。
+
+        path は handoff.md のパスを期待する（既存 caller との互換を保つ）。
+        run_dir は path.parent から導出する。
+
+        Returns:
+            HandoffRecord: 生成した正本レコード
+        """
+        run_dir = path.parent
+        repo = HandoffRepository(run_dir)
+
+        # 既存 offered/accepted handoff を superseded に更新
+        supersedes_id = ""
+        existing = repo.load()
+        if existing is not None and existing.status in (
+            HandoffStatus.OFFERED.value,
+            HandoffStatus.DRAFT.value,
+            HandoffStatus.ACCEPTED.value,
+        ):
+            supersedes_id = existing.handoff_id
+            existing.status = HandoffStatus.SUPERSEDED.value
+            repo.save(existing)
+
+        # 新 HandoffRecord を生成（status=OFFERED）
+        record = HandoffRecord(
+            from_role=handoff.from_role.value if hasattr(handoff.from_role, "value") else str(handoff.from_role),
+            to_role=handoff.to_role.value if hasattr(handoff.to_role, "value") else str(handoff.to_role),
+            artifact_scope=list(getattr(handoff, "artifact_scope", [])),
+            status=HandoffStatus.OFFERED.value,
+            supersedes=supersedes_id,
+        )
+        repo.save(record)
+
+        # handoff.md view（変更なし）
         content = self._render(handoff)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        self._artifact_repo.write(path, content)
+
+        return record
+
+    def accept(self, run_dir: Path, accepted_by: str) -> Optional[HandoffRecord]:
+        """
+        active handoff を accepted 状態に更新する。
+
+        handoff.json が存在しない場合、または対象 status でない場合は None を返す。
+
+        Args:
+            run_dir:     run ディレクトリの Path
+            accepted_by: 受理した role 名
+
+        Returns:
+            更新後の HandoffRecord、または None
+        """
+        repo = HandoffRepository(run_dir)
+        record = repo.load()
+        if record is None or record.status not in (
+            HandoffStatus.OFFERED.value,
+            HandoffStatus.DRAFT.value,
+        ):
+            return record
+        record.status = HandoffStatus.ACCEPTED.value
+        record.accepted_by_next_role = accepted_by
+        record.accepted_at = _now_iso()
+        repo.save(record)
+        return record
 
     def read(self, path: Path) -> str:
         """handoff.md を文字列として読み込む。存在しない場合は空文字。"""

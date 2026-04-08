@@ -24,6 +24,12 @@ work: GUI-first, human-led operation where run type, required checks, and next
 triggers can eventually be handled through guided interaction rather than
 manual document assembly.
 
+See also: [SoChi Public Site Improvement Report](./sochi-public-site-improvement-report.md)
+
+This report acts as a parent source for selecting narrow SoChi BLOCKS
+follow-ups. It should be used as a shortlist-and-cut document, not as a
+single large execution package.
+
 ---
 
 ## Files

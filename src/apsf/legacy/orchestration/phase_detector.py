@@ -1,13 +1,29 @@
 """
-PhaseDetector — run ディレクトリのファイル存在からフェーズを推定する
+PhaseDetector — file heuristic による advisory phase 診断ツール
 
 使用例:
     from apsf.legacy.orchestration.phase_detector import PhaseDetector
 
     detector = PhaseDetector(Path("runs/2026-03-15_sochi-blocks_sns-post-template"))
-    info = detector.detect()
+    info = detector.detect_advisory()
     print(info.phase, info.decision_reason)
     print(info.filled_files)
+
+NOTE (Agent OS v1 migration — Step 7):
+    このモジュールは canonical phase source ではない。
+
+    [canonical routing]
+      run_state.json が存在する run では、ActService が run_state.current_phase を
+      canonical routing source として使用する。
+
+    [advisory / metadata 用途]
+      このモジュールは以下の用途に限定して使用する:
+        (a) run_state.json が存在しない run の bootstrap
+        (b) files_to_read / file_to_write 等の PhaseInfo metadata 取得
+        (c) apsf next などの診断・表示用 advisory scan
+
+    detect_advisory() が推奨 API。
+    detect() は後方互換 alias として残すが、新規コードでは detect_advisory() を使うこと。
 """
 
 from __future__ import annotations
@@ -93,12 +109,19 @@ class PhaseInfo:
 
 class PhaseDetector:
     """
-    run ディレクトリ内のファイル存在・充填状態からフェーズを推定する。
+    Advisory Phase Detector — file heuristic による phase 診断ツール。
 
-    判定基準:
-    - ファイルの存在有無（_exists）
-    - ファイルに意味のある内容があるか（_is_filled）:
-      コメント行・区切り行を除いて 4 行以上あれば「充填済み」とみなす
+    [Agent OS v1 以降の役割]
+      canonical phase source ではない。phase routing の正本は run_state.json。
+      このクラスの用途:
+        (a) run_state.json が存在しない run の bootstrap
+        (b) files_to_read / file_to_write 等の PhaseInfo metadata 取得
+        (c) apsf next などの診断・表示用 advisory scan
+
+    [判定基準]
+      - ファイルの存在有無（_exists）
+      - ファイルに意味のある内容があるか（_is_filled）:
+        コメント行・区切り行を除いて 4 行以上あれば「充填済み」とみなす
 
     注意: この検出は推定であり、ファイルを少ししか書いていない場合は
     誤検知する可能性がある。迷ったら直接ファイルを確認すること。
@@ -427,8 +450,25 @@ class PhaseDetector:
             info.decision_reason = suffix
         return info
 
+    def detect_advisory(self) -> PhaseInfo:
+        """
+        file heuristic による advisory phase scan。
+
+        run_state.json が存在しない場合の bootstrap または PhaseInfo metadata 取得に使用する。
+        canonical routing source として使ってはいけない（run_state.json が正本）。
+        """
+        return self._detect_impl()
+
     def detect(self) -> PhaseInfo:
-        """run の現在フェーズを推定して PhaseInfo を返す。"""
+        """
+        後方互換 alias。detect_advisory() を呼ぶ。
+
+        新規コードでは detect_advisory() を使用すること。
+        """
+        return self.detect_advisory()
+
+    def _detect_impl(self) -> PhaseInfo:
+        """run の現在フェーズを推定して PhaseInfo を返す（内部実装）。"""
 
         # 既知ファイルを一括スキャン（デバッグ情報用）
         existing = [f for f in _KNOWN_FILES if self._exists(f)]

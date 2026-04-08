@@ -1,8 +1,5 @@
 """
-Settings — 環境変数の読み込みとプロジェクトパスの設定
-
-v0.1 は CLI / Human 実行が主体のため、API キーは optional。
-パスはプロジェクトルートからの相対パスをデフォルトとして使用する。
+Settings module for APSF.
 """
 
 from __future__ import annotations
@@ -15,23 +12,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# プロジェクトルート: src/apsf/config/settings.py から 4 階層上
-_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent
 
 
 @dataclass
 class Settings:
-    # Framework paths
     framework_root: Path = field(
         default_factory=lambda: Path(os.getenv("APSF_ROOT", str(_PROJECT_ROOT)))
     )
 
-    # Optional: API keys (only needed for future-api executor)
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
 
-    # Optional: default model names
     default_openai_model: str = field(
         default_factory=lambda: os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4o")
     )
@@ -40,6 +33,9 @@ class Settings:
     )
     default_gemini_model: str = field(
         default_factory=lambda: os.getenv("DEFAULT_GEMINI_MODEL", "gemini-2.0-flash")
+    )
+    disabled_api_providers_raw: str = field(
+        default_factory=lambda: os.getenv("APSF_DISABLED_API_PROVIDERS", "gemini")
     )
 
     @property
@@ -58,8 +54,20 @@ class Settings:
     def framework_dir(self) -> Path:
         return self.framework_root / "framework"
 
+    @property
+    def disabled_api_providers(self) -> set[str]:
+        return {
+            provider.strip().lower()
+            for provider in self.disabled_api_providers_raw.split(",")
+            if provider.strip()
+        }
+
+    def is_provider_disabled(self, provider: str) -> bool:
+        return provider.strip().lower() in self.disabled_api_providers
+
     def has_api_key(self, provider: str) -> bool:
-        """指定プロバイダーの API キーが設定されているかを確認する"""
+        if self.is_provider_disabled(provider):
+            return False
         return {
             "openai": bool(self.openai_api_key),
             "anthropic": bool(self.anthropic_api_key),
@@ -67,7 +75,6 @@ class Settings:
         }.get(provider, False)
 
     def configured_api_providers(self) -> list[str]:
-        """API キーが設定されているプロバイダーの一覧を返す"""
         return [p for p in ["openai", "anthropic", "gemini"] if self.has_api_key(p)]
 
 

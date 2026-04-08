@@ -76,6 +76,10 @@ PTYPE_TO_SPECIALIST: dict[str, str] = {
     "P-10": "framework/agents/planners/performance-planner.md",
     "P-11": "framework/agents/planners/test-strategy-planner.md",
     "P-12": "framework/agents/planners/dependency-upgrade-planner.md",
+    "P-13": "framework/agents/planners/reconstruction-planner.md",
+    "P-19": "framework/agents/planners/verification-planning-planner-1775385814.md",
+    "P-20": "framework/agents/planners/data-contract-planner.md",
+
 }
 
 CTYPE_TO_SPECIALIST: dict[str, str] = {
@@ -87,6 +91,38 @@ CTYPE_TO_SPECIALIST: dict[str, str] = {
     "C-06": "framework/agents/critics/information-architecture.md",
     "C-07": "framework/agents/critics/product-positioning-critic.md",
     "C-08": "framework/agents/critics/puzzle-difficulty-critic.md",
+    "C-09": "framework/agents/critics/data-contract-critic.md",
+    "C-99": "framework/agents/critics/verification-reliability-critic.md",
+
+}
+
+BTYPE_TO_SPECIALIST: dict[str, str] = {
+    "B-01": "framework/agents/builders/product-implementation-builder.md",
+    "B-02": "framework/agents/builders/bugfix-builder.md",
+    "B-03": "framework/agents/builders/refactor-migration-builder.md",
+    "B-04": "framework/agents/builders/frontend-ux-polish-builder.md",
+    "B-05": "framework/agents/builders/deploy-publish-builder.md",
+    "B-06": "framework/agents/builders/validation-probe-builder.md",
+    "B-07": "framework/agents/builders/content-static-builder.md",
+    "B-08": "framework/agents/builders/data-contract-builder.md",
+}
+
+ROLE_TO_SPECIALIST_MAPPING: dict[str, dict[str, str]] = {
+    "Planner": PTYPE_TO_SPECIALIST,
+    "Critic": CTYPE_TO_SPECIALIST,
+    "Builder": BTYPE_TO_SPECIALIST,
+}
+
+ROLE_TO_SPECIALIST_DIRECTORY: dict[str, str] = {
+    "Planner": "framework/agents/planners",
+    "Critic": "framework/agents/critics",
+    "Builder": "framework/agents/builders",
+}
+
+ROLE_TO_SPECIALIST_MAPPING_NAME: dict[str, str] = {
+    "Planner": "PTYPE_TO_SPECIALIST",
+    "Critic": "CTYPE_TO_SPECIALIST",
+    "Builder": "BTYPE_TO_SPECIALIST",
 }
 
 
@@ -115,6 +151,48 @@ def normalize_ptype(raw: str) -> str:
 def normalize_ctype(raw: str) -> str:
     code = normalize_specialist_code(raw)
     return code if code.startswith("C-") else ""
+
+
+def normalize_btype(raw: str) -> str:
+    code = normalize_specialist_code(raw)
+    return code if code.startswith("B-") else ""
+
+
+def normalize_specialist_code_for_role(role: str, raw: str) -> str:
+    if role == "Planner":
+        return normalize_ptype(raw)
+    if role == "Critic":
+        return normalize_ctype(raw)
+    if role == "Builder":
+        return normalize_btype(raw)
+    return ""
+
+
+def specialist_mapping_for_role(role: str) -> dict[str, str]:
+    return ROLE_TO_SPECIALIST_MAPPING.get(role, {})
+
+
+def specialist_mapping_name_for_role(role: str) -> str:
+    return ROLE_TO_SPECIALIST_MAPPING_NAME.get(role, "")
+
+
+def specialist_directory_for_role(role: str) -> str:
+    return ROLE_TO_SPECIALIST_DIRECTORY.get(role, "")
+
+
+def slugify_specialist_name(raw: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (raw or "").strip().lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    return slug
+
+
+def derive_specialist_relative_path(role: str, code: str, slug: str) -> str:
+    normalized_code = normalize_specialist_code_for_role(role, code)
+    normalized_slug = slugify_specialist_name(slug)
+    directory = specialist_directory_for_role(role)
+    if not normalized_code or not normalized_slug or not directory:
+        return ""
+    return f"{directory}/{normalized_slug}.md"
 
 
 def extract_primary_specialist_code(text: str, prefix: str) -> str:
@@ -147,6 +225,10 @@ def extract_primary_ctype(text: str) -> str:
     return extract_primary_specialist_code(text, "C")
 
 
+def extract_primary_btype(text: str) -> str:
+    return extract_primary_specialist_code(text, "B")
+
+
 def specialist_path_for_code(
     code: str,
     framework_root: Path,
@@ -167,6 +249,10 @@ def specialist_path_for_ctype(ctype: str, framework_root: Path) -> Path | None:
     return specialist_path_for_code(ctype, framework_root, CTYPE_TO_SPECIALIST)
 
 
+def specialist_path_for_btype(btype: str, framework_root: Path) -> Path | None:
+    return specialist_path_for_code(btype, framework_root, BTYPE_TO_SPECIALIST)
+
+
 def load_specialist_content(
     code: str,
     framework_root: Path,
@@ -174,7 +260,12 @@ def load_specialist_content(
 ) -> str:
     if mapping is None:
         normalized = normalize_specialist_code(code)
-        mapping = PTYPE_TO_SPECIALIST if normalized.startswith("P-") else CTYPE_TO_SPECIALIST
+        if normalized.startswith("P-"):
+            mapping = PTYPE_TO_SPECIALIST
+        elif normalized.startswith("B-"):
+            mapping = BTYPE_TO_SPECIALIST
+        else:
+            mapping = CTYPE_TO_SPECIALIST
     path = specialist_path_for_code(code, framework_root, mapping)
     if path is None or not path.exists():
         return ""
@@ -376,3 +467,91 @@ def resolve_critic_specialist(
         mapping=CTYPE_TO_SPECIALIST,
         explicit_label="explicit Primary C-TYPE",
     )
+
+
+def resolve_builder_specialist(
+    goal_text: str,
+    assignment_text: str,
+    framework_root: Path,
+) -> SpecialistSelection:
+    return _resolve_specialist(
+        goal_text=goal_text,
+        assignment_text=assignment_text,
+        framework_root=framework_root,
+        prefix="B",
+        mapping=BTYPE_TO_SPECIALIST,
+        explicit_label="explicit Primary B-TYPE",
+    )
+
+
+def _rank_all(
+    goal_text: str,
+    framework_root: Path,
+    mapping: dict[str, str],
+) -> list[SpecialistSelection]:
+    """Return all specialists scored against goal_text, sorted by score descending."""
+    results: list[SpecialistSelection] = []
+    for code in sorted(mapping):
+        content = load_specialist_content(code, framework_root, mapping)
+        if not content:
+            continue
+        sections = selection_sections(content)
+        score, reasons = _score_goal_against_sections(goal_text, sections)
+        reason = "inferred from specialist markdown"
+        if reasons:
+            reason += f"; {'; '.join(reasons)}"
+        results.append(
+            SpecialistSelection(
+                ptype=code,
+                specialist_path=specialist_path_for_code(code, framework_root, mapping),
+                specialist_content=content,
+                mode="inferred",
+                reason=reason,
+                score=score,
+            )
+        )
+    return sorted(results, key=lambda s: s.score, reverse=True)
+
+
+def rank_planner_specialists(
+    goal_text: str, framework_root: Path
+) -> list[SpecialistSelection]:
+    """Return all planner specialists ranked by score against goal_text."""
+    return _rank_all(goal_text, framework_root, PTYPE_TO_SPECIALIST)
+
+
+def rank_critic_specialists(
+    goal_text: str, framework_root: Path
+) -> list[SpecialistSelection]:
+    """Return all critic specialists ranked by score against goal_text."""
+    return _rank_all(goal_text, framework_root, CTYPE_TO_SPECIALIST)
+
+
+def rank_builder_specialists(
+    goal_text: str, framework_root: Path
+) -> list[SpecialistSelection]:
+    """Return all builder specialists ranked by score against goal_text."""
+    return _rank_all(goal_text, framework_root, BTYPE_TO_SPECIALIST)
+
+
+def specialist_display_name(code: str) -> str:
+    """Return a human-readable name for a specialist code (e.g. 'P-06' → 'design-planner')."""
+    for mapping in (PTYPE_TO_SPECIALIST, CTYPE_TO_SPECIALIST, BTYPE_TO_SPECIALIST):
+        path = mapping.get(code.upper())
+        if path:
+            return Path(path).stem
+    return code
+
+
+def extract_use_when_first_line(specialist_content: str) -> str:
+    """Return the first non-empty line of the Use This Specialist When section."""
+    text = extract_section(specialist_content, "Use This Specialist When")
+    if not text:
+        text = extract_section(specialist_content, "Use This Planner When")
+    if not text:
+        text = extract_section(specialist_content, "Use This Critic When")
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("-").strip()
+        if stripped:
+            return stripped
+    return ""

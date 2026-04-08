@@ -17,12 +17,14 @@ CliRunner を使って Typer コマンドを直接呼び出す。
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from apsf.core.storage.force_audit_repository import ForceAuditRepository
 from apsf.legacy.cli.main import app
 from apsf.legacy.orchestration.transcript_generator import TranscriptGenerator
 import apsf.legacy.config.settings as settings_module
@@ -90,6 +92,30 @@ def _invoke_write_phase(
     )
 
 
+def _write_run_state(
+    run_dir: Path,
+    *,
+    phase: str,
+    owner: str,
+    phase_status: str = "pending",
+) -> None:
+    (run_dir / "run_state.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_dir.name,
+                "current_phase": phase,
+                "phase_status": phase_status,
+                "current_owner": owner,
+                "retry_count": 0,
+                "last_error": "",
+                "active_handoff_id": "",
+                "gate_failures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 # ---------------------------------------------------------------------------
 # TestWritePhaseBasic: 基本的な保存動作
 # ---------------------------------------------------------------------------
@@ -141,6 +167,33 @@ class TestWritePhaseBasic:
         assert result.exit_code == 0
         assert "[Next]" in result.output
         assert "apsf next" in result.output
+
+
+def test_write_phase_advances_run_state_after_review_save(tmp_path: Path) -> None:
+    _setup_env(tmp_path)
+    run_name = "2099-01-01_test-case_write-review-state"
+    run_dir = _create_run(tmp_path, run_name)
+    _fill_file(run_dir, "execution-assignment.md")
+    _fill_file(run_dir, "goal.md")
+    _fill_file(run_dir, "build.md")
+    _write_run_state(run_dir, phase="REVIEW_NEEDED", owner="Critic")
+    stale_state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+    stale_state["retry_count"] = 3
+    stale_state["last_error"] = "stale failure"
+    stale_state["active_handoff_id"] = "handoff-789"
+    stale_state["gate_failures"] = ["old blocker"]
+    (run_dir / "run_state.json").write_text(json.dumps(stale_state), encoding="utf-8")
+
+    result = _invoke_write_phase(tmp_path, run_name, ["--stdin"], _meaningful_content(5))
+
+    assert result.exit_code == 0, result.output
+    state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+    assert state["current_phase"] == "IMPROVE_NEEDED"
+    assert state["current_owner"] == "Human"
+    assert state["phase_status"] == "pending"
+    assert state["retry_count"] == 0
+    assert state["last_error"] == ""
+    assert state["gate_failures"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -295,11 +348,25 @@ class TestWritePhaseOverwrite:
         run_dir = self._setup(tmp_path)
         new_content = _meaningful_content(5).replace("Meaningful", "Updated")
         result = _invoke_write_phase(
-            tmp_path, self.RUN, ["--stdin", "--force"], new_content
+            tmp_path,
+            self.RUN,
+            ["--stdin", "--force", "--force-reason", "intentional overwrite"],
+            new_content,
         )
         assert result.exit_code == 0
         saved = (run_dir / "plan.md").read_text(encoding="utf-8")
         assert "Updated" in saved
+
+    def test_force_without_reason_blocked(self, tmp_path: Path) -> None:
+        """--force に reason がない場合は block される。"""
+        run_dir = self._setup(tmp_path)
+        original = (run_dir / "plan.md").read_text(encoding="utf-8")
+
+        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin", "--force"], self.CONTENT)
+
+        assert result.exit_code == 2
+        assert "--force-reason is required" in result.stderr
+        assert (run_dir / "plan.md").read_text(encoding="utf-8") == original
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +396,12 @@ class TestWritePhaseForceWarning:
     def test_force_stdin_warns_on_stderr(self, tmp_path: Path) -> None:
         """--force --stdin で上書きするとき stderr に警告が出る。"""
         self._setup(tmp_path)
-        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin", "--force"], self.CONTENT)
+        result = _invoke_write_phase(
+            tmp_path,
+            self.RUN,
+            ["--stdin", "--force", "--force-reason", "intentional overwrite"],
+            self.CONTENT,
+        )
         assert result.exit_code == 0, result.output
         assert "Overwriting" in result.stderr
         assert "plan.md" in result.stderr
@@ -337,14 +409,24 @@ class TestWritePhaseForceWarning:
     def test_force_stdin_warning_mentions_phase_target(self, tmp_path: Path) -> None:
         """警告メッセージに 'current phase target' が含まれる。"""
         self._setup(tmp_path)
-        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin", "--force"], self.CONTENT)
+        result = _invoke_write_phase(
+            tmp_path,
+            self.RUN,
+            ["--stdin", "--force", "--force-reason", "intentional overwrite"],
+            self.CONTENT,
+        )
         assert result.exit_code == 0
         assert "current phase target" in result.stderr
 
     def test_force_stdin_warning_not_in_stdout(self, tmp_path: Path) -> None:
         """上書き警告は stdout に出ない（pipe 透過性を保つ）。"""
         self._setup(tmp_path)
-        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin", "--force"], self.CONTENT)
+        result = _invoke_write_phase(
+            tmp_path,
+            self.RUN,
+            ["--stdin", "--force", "--force-reason", "intentional overwrite"],
+            self.CONTENT,
+        )
         assert result.exit_code == 0
         assert "Overwriting" not in result.stdout
 
@@ -355,9 +437,69 @@ class TestWritePhaseForceWarning:
         _fill_file(run_dir, "execution-assignment.md")
         _fill_file(run_dir, "goal.md")
         # plan.md は空（テンプレートのまま）
-        result = _invoke_write_phase(tmp_path, self.RUN, ["--stdin", "--force"], self.CONTENT)
+        result = _invoke_write_phase(
+            tmp_path,
+            self.RUN,
+            ["--stdin", "--force", "--force-reason", "intentional overwrite"],
+            self.CONTENT,
+        )
         assert result.exit_code == 0
         assert "Overwriting" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# TestWritePhaseForceAudit: --force audit trail
+# ---------------------------------------------------------------------------
+
+class TestWritePhaseForceAudit:
+    RUN = "2099-01-01_test-case_force-audit"
+    CONTENT = _meaningful_content(5)
+
+    def _setup(self, tmp_path: Path) -> Path:
+        _setup_env(tmp_path)
+        run_dir = _create_run(tmp_path, self.RUN)
+        _fill_file(run_dir, "execution-assignment.md")
+        _fill_file(run_dir, "goal.md")
+        (run_dir / "plan.md").write_text(
+            "# Plan\n\nExisting content.\n", encoding="utf-8"
+        )
+        return run_dir
+
+    def test_force_write_phase_creates_audit_entry(self, tmp_path: Path) -> None:
+        """write-phase --force 実行で force_audit.json に overwrite entry が保存される。"""
+        run_dir = self._setup(tmp_path)
+
+        result = _invoke_write_phase(
+            tmp_path,
+            self.RUN,
+            ["--stdin", "--force", "--force-reason", "intentional overwrite"],
+            self.CONTENT,
+        )
+
+        assert result.exit_code == 0, result.output
+        entries = ForceAuditRepository(run_dir).load()
+        assert len(entries) == 1
+        assert entries[0].command == "write-phase"
+        assert entries[0].target_file == "plan.md"
+        assert entries[0].override_kind == "overwrite"
+        assert entries[0].had_reason is True
+        assert entries[0].reason == "intentional overwrite"
+
+    def test_force_write_phase_without_reason_is_blocked(self, tmp_path: Path) -> None:
+        """write-phase --force で reason なしなら block され、audit も残らない。"""
+        run_dir = self._setup(tmp_path)
+
+        result = _invoke_write_phase(
+            tmp_path,
+            self.RUN,
+            ["--stdin", "--force"],
+            self.CONTENT,
+        )
+
+        assert result.exit_code == 2, result.output
+        assert "--force-reason is required" in result.stderr
+        entries = ForceAuditRepository(run_dir).load()
+        assert entries == []
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,32 @@ cp -r runs/_template runs/YYYY-MM-DD_case-key_topic
 
 ---
 
+## GUI Verification Rule
+
+FW改善で GUI / Viewer / Agent OS を触る run では、`npm run build` や API 単体確認だけで完了扱いにしない。
+
+- visible behavior が変わる変更では、少なくとも manual smoke で GUI の操作列を確認する
+- 可能なら E2E を追加する
+- 特に以下を含む変更では、child run を含む総合確認を優先する
+  - run / child-run 切替
+  - Agent OS タブ
+  - assignment / recovery / operator action panel
+  - confirm / apply / rerun など state を変える操作
+
+最低限 build/review/result には、確認した操作列を明記する。
+
+例:
+
+- run を選択する
+- child run に切り替える
+- Agent OS タブを開く
+- 必要な panel / candidate list が表示される
+- Confirm / Apply 後に badge や state が更新される
+
+GUI まで触れていない場合は、未確認であることを明記する。
+
+---
+
 ## ファイル構成
 
 1 run は 1 つの problem solving cycle を表します。基本構成は次のとおりです。

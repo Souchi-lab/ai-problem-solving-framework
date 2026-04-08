@@ -35,3 +35,4 @@ packages = ["src/apsf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--basetemp=.tmp-pytest"

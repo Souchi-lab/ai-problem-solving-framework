@@ -2,6 +2,7 @@ from pathlib import Path
 
 from apsf.legacy.cli.specialist_registry import (
     extract_section,
+    resolve_builder_specialist,
     resolve_critic_specialist,
     resolve_planner_specialist,
     selection_sections,
@@ -113,3 +114,90 @@ def test_resolve_critic_specialist_can_infer_puzzle_difficulty_from_repo_files()
     decision = resolve_critic_specialist(goal, "", Path("."))
     assert decision.mode == "inferred"
     assert decision.ptype == "C-08"
+
+
+# ── Builder specialist selection ──────────────────────────────────────────────
+
+def test_resolve_builder_specialist_prefers_explicit_btype() -> None:
+    assignment = "## Builder Specialist\n- Primary B-TYPE: B-04 Frontend / UX Polish\n"
+    goal = "Polish the viewer layout and improve spacing consistency."
+    decision = resolve_builder_specialist(goal, assignment, FIXTURES)
+    assert decision.mode == "explicit"
+    assert decision.ptype == "B-04"
+    assert "explicit Primary B-TYPE" in decision.reason
+
+
+def test_resolve_builder_specialist_explicit_b02() -> None:
+    assignment = "## Builder Specialist\n- Primary B-TYPE: B-02 Bug Fix\n"
+    goal = "Fix the broken authentication flow regression."
+    decision = resolve_builder_specialist(goal, assignment, Path("."))
+    assert decision.mode == "explicit"
+    assert decision.ptype == "B-02"
+
+
+def test_resolve_builder_specialist_infers_bugfix_from_repo_files() -> None:
+    goal = (
+        "Fix a reproducible regression where state mismatch causes a broken flow. "
+        "Localize the defect, apply a minimal correction, and add a regression test."
+    )
+    decision = resolve_builder_specialist(goal, "", Path("."))
+    assert decision.mode == "inferred"
+    assert decision.ptype == "B-02"
+
+
+def test_resolve_builder_specialist_infers_refactor_from_repo_files() -> None:
+    goal = (
+        "Refactor the import structure, move files to their canonical locations, "
+        "and consolidate duplicated logic into a single module."
+    )
+    decision = resolve_builder_specialist(goal, "", Path("."))
+    assert decision.mode == "inferred"
+    assert decision.ptype == "B-03"
+
+
+def test_resolve_builder_specialist_infers_frontend_polish_from_repo_files() -> None:
+    goal = (
+        "Polish the UI layout: adjust spacing, fix typography inconsistencies, "
+        "and improve responsive breakpoint behavior on mobile."
+    )
+    decision = resolve_builder_specialist(goal, "", Path("."))
+    assert decision.mode == "inferred"
+    assert decision.ptype == "B-04"
+
+
+def test_resolve_builder_specialist_infers_deploy_from_repo_files() -> None:
+    goal = (
+        "Deploy the preview build to the staging environment and confirm the artifact "
+        "is accessible at the expected URL."
+    )
+    decision = resolve_builder_specialist(goal, "", Path("."))
+    assert decision.mode == "inferred"
+    assert decision.ptype == "B-05"
+
+
+def test_resolve_builder_specialist_infers_validation_probe_from_repo_files() -> None:
+    goal = (
+        "Run smoke tests and probe the round-trip validation sequence. "
+        "Record results and make minimal corrective changes based on probe findings."
+    )
+    decision = resolve_builder_specialist(goal, "", Path("."))
+    assert decision.mode == "inferred"
+    assert decision.ptype == "B-06"
+
+
+def test_resolve_builder_specialist_infers_content_static_from_repo_files() -> None:
+    goal = (
+        "Update the static HTML copy, revise documentation content, "
+        "and fix formatting in the generated asset manifest."
+    )
+    decision = resolve_builder_specialist(goal, "", Path("."))
+    assert decision.mode == "inferred"
+    assert decision.ptype == "B-07"
+
+
+def test_resolve_builder_specialist_explicit_none_returns_generic() -> None:
+    assignment = "## Builder Specialist\n- Primary B-TYPE: none\n"
+    goal = "Some build task."
+    decision = resolve_builder_specialist(goal, assignment, Path("."))
+    assert decision.mode == "explicit"
+    assert decision.ptype == ""

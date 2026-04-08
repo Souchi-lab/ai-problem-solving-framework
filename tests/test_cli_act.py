@@ -14,6 +14,7 @@ CliRunner を使って Typer コマンドを直接呼び出す。
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -215,6 +216,43 @@ class TestActAutoGeneration:
         assert result.exit_code == 0, result.output
         assert (run_dir / "build.md").exists()
 
+    def test_build_auto_generated_advances_canonical_run_state(self, tmp_path: Path) -> None:
+        _setup_env(tmp_path)
+        run_dir = _create_run(tmp_path, self.RUN)
+        _fill_file(run_dir, "execution-assignment.md")
+        _fill_file(run_dir, "goal.md")
+        _fill_file(run_dir, "plan.md")
+        (run_dir / "run_state.json").write_text(
+            json.dumps(
+                {
+                    "run_id": self.RUN,
+                    "current_phase": "BUILD_NEEDED",
+                    "phase_status": "failed",
+                    "current_owner": "Builder",
+                    "retry_count": 2,
+                    "last_error": "stale build error",
+                    "active_handoff_id": "handoff-321",
+                    "gate_failures": ["old warning"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
+            return_value=_MockProvider(),
+        ):
+            result = _invoke_act(tmp_path, self.RUN)
+
+        assert result.exit_code == 0, result.output
+        state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+        assert state["current_phase"] == "REVIEW_NEEDED"
+        assert state["phase_status"] == "pending"
+        assert state["current_owner"] == "Critic"
+        assert state["retry_count"] == 0
+        assert state["last_error"] == ""
+        assert state["active_handoff_id"] == ""
+
     def test_review_auto_generated(self, tmp_path: Path) -> None:
         """build.md 充填済み、review.md 未充填 → review.md を自動生成する。"""
         _setup_env(tmp_path)
@@ -265,6 +303,24 @@ class TestActProtection:
         assert saved == original
         # already_filled メッセージが含まれること
         assert "already" in result.output.lower() or "force" in result.output.lower()
+
+    def test_force_without_reason_is_blocked(self, tmp_path: Path) -> None:
+        """act --force は reason なしだと block される。"""
+        _setup_env(tmp_path)
+        run_dir = _create_run(tmp_path, self.RUN)
+        _fill_file(run_dir, "execution-assignment.md")
+        _fill_file(run_dir, "goal.md")
+        _fill_file(run_dir, "plan.md")
+        (run_dir / "build.md").write_text("Existing build content line\n", encoding="utf-8")
+
+        with patch(
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
+            return_value=_MockProvider(),
+        ):
+            result = _invoke_act(tmp_path, self.RUN, ["--force"])
+
+        assert result.exit_code == 2, result.output
+        assert "--force-reason is required" in result.output
 
 
 # ---------------------------------------------------------------------------

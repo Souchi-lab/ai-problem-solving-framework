@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Activity, Check, Clock, Copy, FileText, Search, Terminal } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { Activity, Check, ChevronLeft, ChevronRight, Clock, Copy, FileText, Search, Settings, Terminal } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -16,6 +16,7 @@ interface RunSummary {
   last_modified: number
   priority: 'Now' | 'Next' | 'Later' | 'Unranked'
   priority_reason?: string | null
+  human_blocker_active?: boolean
 }
 
 interface ArtifactPreview {
@@ -49,6 +50,69 @@ interface ChildRunSummary {
   has_children: boolean
 }
 
+interface SpecialistVisibility {
+  phase: string
+  mode: 'explicit' | 'inferred' | 'unresolved' | 'not_applicable'
+  specialist_code: string
+  reason: string
+  has_gap: boolean
+}
+
+interface ExecutionVisibility {
+  role: string
+  execution_type: 'cli' | 'human' | 'future-api' | 'not_applicable'
+  target: string
+  workspace: string
+  mode: 'explicit' | 'default' | 'not_applicable'
+  reason: string
+}
+
+interface ModelVisibility {
+  role: string
+  provider: string
+  model: string
+  mode: 'explicit' | 'default' | 'human' | 'auto' | 'wrapper-backed' | 'unset' | 'not_applicable'
+  reason: string
+}
+
+interface AssignmentSummary {
+  phase: string
+  role: string
+  execution: ExecutionVisibility
+  model: ModelVisibility
+}
+
+interface JudgeRecommendation {
+  decision: 'Adopt' | 'Revise' | 'Reject' | 'Unknown'
+  suggested_action_id?: string | null
+  suggested_action_label?: string | null
+  suggested_return_phase?: string | null
+  target_role?: string | null
+  target_execution_type?: string | null
+  target_provider?: string | null
+  target_model?: string | null
+  target_specialist_code?: string | null
+  target_specialist_mode?: string | null
+  confidence: 'low' | 'medium' | 'high'
+  rationale: string
+  review_verdict?: string | null
+  counts_note?: string | null
+  critical_count: number
+  major_count: number
+  minor_count: number
+  human_owned_blocker?: boolean
+  human_blocker_summary?: string | null
+  human_blocker_source?: string | null
+  human_actions?: string[]
+}
+
+interface HumanBlockerStatus {
+  active: boolean
+  summary?: string | null
+  source?: string | null
+  actions: string[]
+}
+
 interface RunDetail {
   name: string
   taxonomy: string
@@ -59,6 +123,10 @@ interface RunDetail {
   operator_command: string
   operator_actions?: OperatorAction[]
   children?: ChildRunSummary[]
+  specialist_visibility: SpecialistVisibility
+  assignment_summary: AssignmentSummary
+  judge_recommendation?: JudgeRecommendation | null
+  human_blocker?: HumanBlockerStatus | null
   priority: 'Now' | 'Next' | 'Later' | 'Unranked'
   priority_reason?: string | null
 }
@@ -132,6 +200,32 @@ interface RunHistory {
   latest_rerun_comment?: RerunCommentRecord | null
 }
 
+interface ViewerConfig {
+  execution_mode: 'wrapper' | 'provider'
+  cli_tool_mode: 'claude' | 'codex' | 'both'
+  act_wrapper_backend: 'claude-cli' | 'codex-cli'
+  build_wrapper_backend: 'claude-cli' | 'codex-cli'
+  config_path: string
+  config_exists: boolean
+  dotenv_path: string
+  dotenv_exists: boolean
+  settings_path: string
+  framework_root: string
+  runs_dir: string
+  template_dir: string
+  default_openai_model: string
+  default_anthropic_model: string
+  default_gemini_model: string
+  openai_api_key_configured: boolean
+  anthropic_api_key_configured: boolean
+  gemini_api_key_configured: boolean
+  execution_mode_source: 'env' | 'viewer_config' | 'default'
+  act_wrapper_backend_source: 'env' | 'viewer_config' | 'default'
+  build_wrapper_backend_source: 'env' | 'viewer_config' | 'default'
+  build_max_turns: number
+  run_detail_refresh_ms: number
+}
+
 interface CodexArtifactUpdate {
   artifact_name: string
   operation: 'propose'
@@ -152,7 +246,142 @@ interface CodexBridgeResult {
 interface ModalConfig {
   title: string
   message: string
-  onConfirm: () => void
+  onConfirm: (inputValue?: string) => void | Promise<void>
+  confirmLabel?: string
+  cancelLabel?: string
+  tone?: 'default' | 'danger'
+  inputLabel?: string
+  inputPlaceholder?: string
+  inputDefaultValue?: string
+  inputRequired?: boolean
+}
+
+interface AgentOSActionFeedback {
+  kind: 'running' | 'blocked' | 'success' | 'failure'
+  title: string
+  detail: string
+  actionId?: string | null
+}
+
+interface RunningExecutionState {
+  actionId: string
+  startedAt: number
+}
+
+// ── Agent OS interfaces ─────────────────────────────────────────────────────
+
+interface RunStateInfo {
+  run_id: string
+  current_phase: string
+  phase_status: string
+  current_owner: string
+  retry_count: number
+  last_error: string
+  active_handoff_id: string
+  gate_failures: string[]
+}
+
+interface ArtifactEntryInfo {
+  artifact_name: string
+  artifact_type: string
+  owner_role: string
+  written_by: string
+  status: string
+  updated_at: string
+  revision: number
+  source_handoff_id: string
+}
+
+interface GateResultInfo {
+  gate_type: string
+  passed: boolean
+  reason: string
+}
+
+interface ForceAuditEntryInfo {
+  timestamp: string
+  command: string
+  target_file: string
+  role: string
+  had_reason: boolean
+  reason: string
+  override_kind: string
+}
+
+interface RecoveryCheckpointInfo {
+  checkpoint_id: string
+  phase: string
+  phase_status: string
+  created_at: string
+  related_event_id?: string | null
+  summary?: string | null
+}
+
+interface RecoverySnapshotInfo {
+  snapshot_id: string
+  source_phase: string
+  captured_at: string
+  file_count: number
+  target_paths: string[]
+  content_hashes: string[]
+}
+
+interface RecoveryApplyTraceInfo {
+  event_id: string
+  event_type: string
+  timestamp: string
+  status: string
+  target_kind: string
+  target_id: string
+  reason?: string | null
+  outcome_summary?: string | null
+}
+
+interface SpecialistCandidateItem {
+  code: string
+  name: string
+  score: number
+  reason: string
+  use_when: string
+  path?: string | null
+  scope: string
+  out_of_scope: string
+  evaluation_criteria: string
+  is_recommended: boolean
+  is_current: boolean
+}
+
+interface SpecialistCandidatesData {
+  phase: string
+  role: string
+  current_mode: string
+  current_code: string
+  candidates: SpecialistCandidateItem[]
+}
+
+interface AgentOSInfo {
+  run_state: RunStateInfo | null
+  artifact_manifest: ArtifactEntryInfo[] | null
+  gate_results: GateResultInfo[]
+  force_audit: ForceAuditEntryInfo[] | null
+  recovery_checkpoints: RecoveryCheckpointInfo[]
+  recovery_snapshots: RecoverySnapshotInfo[]
+  recovery_apply_traces: RecoveryApplyTraceInfo[]
+}
+
+interface CreateSpecialistResult {
+  created: boolean
+  role: 'Planner' | 'Builder' | 'Critic'
+  specialist_code: string
+  title: string
+  scope: string
+  use_when: string
+  out_of_scope: string
+  evaluation_criteria: string
+  relative_path: string
+  registry_path: string
+  mapping_name: string
+  assigned_to_run: boolean
 }
 
 const API_BASE = '/api'
@@ -194,7 +423,7 @@ const formatDuration = (start?: string | null, end?: string | null) => {
     if (diff < 0) return null
     if (diff < 60) return `${diff}s`
     return `${Math.floor(diff / 60)}m ${diff % 60}s`
-  } catch (e) {
+  } catch {
     return null
   }
 }
@@ -211,9 +440,38 @@ const formatRelativeTime = (isoString?: string | null) => {
     if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
     if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`
     return date.toLocaleDateString()
-  } catch (e) {
+  } catch {
     return isoString
   }
+}
+
+const formatElapsedMs = (elapsedMs: number) => {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+const buildJudgeAdvisoryComment = (recommendation: JudgeRecommendation) => {
+  const lines = [
+    `Judge advisory: ${recommendation.decision}${recommendation.suggested_action_label ? ` -> ${recommendation.suggested_action_label}` : ''}`,
+  ]
+  if (recommendation.review_verdict) {
+    lines.push(`Review verdict: ${recommendation.review_verdict}`)
+  }
+  lines.push(
+    `Severity counts: Critical=${recommendation.critical_count}, Major=${recommendation.major_count}, Minor=${recommendation.minor_count}`,
+  )
+  if (recommendation.suggested_return_phase) {
+    lines.push(`Suggested return phase: ${recommendation.suggested_return_phase}`)
+  }
+  if (recommendation.target_role || recommendation.target_execution_type) {
+    lines.push(
+      `Return target: role=${recommendation.target_role || 'n/a'}, execution=${recommendation.target_execution_type || 'n/a'}, provider=${recommendation.target_provider || 'n/a'}, model=${recommendation.target_model || 'n/a'}, specialist=${recommendation.target_specialist_code || 'n/a'}`,
+    )
+  }
+  lines.push(`Rationale: ${recommendation.rationale}`)
+  return lines.join('\n')
 }
 
 const PhaseBadge = ({ phase }: { phase: string }) => {
@@ -235,6 +493,25 @@ const PhaseBadge = ({ phase }: { phase: string }) => {
   return (
     <span className={`px-2.5 py-0.5 text-[9px] font-bold tracking-tighter uppercase rounded border ${colors[phase] ?? 'bg-zinc-500/10 text-zinc-400 border-zinc-500/30'}`}>
       {phase}
+    </span>
+  )
+}
+
+const AssignmentModeBadge = ({ mode }: { mode: string }) => {
+  const colors: Record<string, string> = {
+    explicit: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200',
+    inferred: 'border-sky-500/30 bg-sky-500/10 text-sky-200',
+    auto: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200',
+    default: 'border-amber-500/30 bg-amber-500/10 text-amber-200',
+    unset: 'border-zinc-600/40 bg-zinc-800/40 text-zinc-300',
+    'wrapper-backed': 'border-violet-500/30 bg-violet-500/10 text-violet-200',
+    unresolved: 'border-red-500/30 bg-red-500/10 text-red-200',
+    human: 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200',
+    not_applicable: 'border-zinc-700/40 bg-zinc-900/40 text-zinc-500',
+  }
+  return (
+    <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${colors[mode] ?? colors.not_applicable}`}>
+      {mode}
     </span>
   )
 }
@@ -325,6 +602,59 @@ function hasExecutionLogContent(stdout?: string | null, stderr?: string | null) 
   return Boolean(stdout?.trim() || stderr?.trim())
 }
 
+function formatAgentOSTimestamp(value?: string | null) {
+  if (!value) return '—'
+  try {
+    return new Date(value).toLocaleString()
+  } catch {
+    return value
+  }
+}
+
+
+function prettifyActionId(actionId?: string | null) {
+  if (!actionId) return 'Unknown Action'
+  return actionId
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function summarizeExecutionIntent(actionId?: string | null, command?: string | null, actionType?: string | null) {
+  const normalized = (actionId || '').trim()
+  const commandText = (command || '').trim().toLowerCase()
+  const typeText = (actionType || '').trim().toLowerCase()
+  if (normalized === 'phase-primary') {
+    if (typeText === 'build' || commandText.includes('apsf-wrapper-build') || commandText.includes('apsf build')) return 'Ran Builder'
+    if (typeText === 'act') {
+      if (commandText.includes('review_needed') || commandText.includes('critic')) return 'Ran Critic'
+      if (commandText.includes('plan_needed') || commandText.includes('planner')) return 'Ran Planner'
+      return 'Ran phase actor'
+    }
+    return 'Primary phase action executed'
+  }
+  if (normalized === 'rerun-plan') return 'Returned the run to Planner'
+  if (normalized === 'rerun-build') return 'Returned the run to Builder'
+  if (normalized === 'rerun-review') return 'Returned the run to Critic'
+  if (normalized === 'rerun-improve') return 'Reopened the Judge step'
+  if (normalized === 'act') return 'Ran the current phase actor'
+  if (normalized === 'capture-snapshot') return 'Captured a recovery snapshot'
+  if (normalized === 'capture-checkpoint') return 'Captured an execution checkpoint'
+  if (normalized === 'apply-snapshot') return 'Applied a recovery snapshot'
+  if (normalized === 'apply-checkpoint') return 'Applied an execution checkpoint'
+
+  const text = (command || '').trim()
+  if (!text) return prettifyActionId(actionId)
+  const firstLine = text.split('\n')[0]?.trim()
+  return firstLine || prettifyActionId(actionId)
+}
+
+function summarizeExecutionOutcome(stdoutSummary?: string | null, stderrSummary?: string | null) {
+  const source = (stderrSummary || stdoutSummary || '').trim()
+  if (!source) return 'No summary recorded.'
+  return source.split('\n').map((line) => line.trim()).find(Boolean) || 'No summary recorded.'
+}
 
 const ReworkBadge = ({ count }: { count: number }) => {
   if (count <= 0) return null
@@ -439,25 +769,958 @@ const WorkflowProgress = ({
 }
 
 function ConfirmModal({ config, onCancel }: { config: ModalConfig; onCancel: () => void }) {
+  const [inputValue, setInputValue] = useState(config.inputDefaultValue ?? '')
+  const confirmToneClass =
+    config.tone === 'danger'
+      ? 'bg-red-600 hover:bg-red-500 shadow-red-500/20'
+      : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20'
+  const confirmDisabled = Boolean(config.inputRequired && inputValue.trim() === '')
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
       <div className="w-full max-w-md scale-in-center rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl">
         <h3 className="mb-2 text-lg font-bold text-zinc-100">{config.title}</h3>
-        <p className="mb-6 whitespace-pre-wrap text-sm text-zinc-400">{config.message}</p>
+        <p className="mb-4 whitespace-pre-wrap text-sm text-zinc-400">{config.message}</p>
+        {config.inputLabel && (
+          <div className="mb-6">
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+              {config.inputLabel}
+            </label>
+            <textarea
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              className="min-h-24 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 outline-none transition-colors focus:border-zinc-500"
+              placeholder={config.inputPlaceholder}
+            />
+          </div>
+        )}
         <div className="flex justify-end gap-3">
           <button
             onClick={onCancel}
             className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
           >
-            Cancel
+            {config.cancelLabel ?? 'Cancel'}
           </button>
           <button
-            onClick={config.onConfirm}
-            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 shadow-lg shadow-emerald-500/20 transition-all active:scale-95"
+            onClick={() => void config.onConfirm(inputValue)}
+            disabled={confirmDisabled}
+            className={`rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-lg transition-all active:scale-95 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500 ${confirmToneClass}`}
             id="modal-confirm-button"
           >
-            Execute
+            {config.confirmLabel ?? 'Execute'}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function deriveSpecialistPathPreview(role: SpecialistCandidatesData['role'], code: string, slug: string) {
+  const normalizedSlug = slug
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+
+  const directory =
+    role === 'Planner'
+      ? 'framework/agents/planners'
+      : role === 'Builder'
+        ? 'framework/agents/builders'
+        : role === 'Critic'
+          ? 'framework/agents/critics'
+          : ''
+
+  if (!directory || !code.trim() || !normalizedSlug) return ''
+  return `${directory}/${normalizedSlug}.md`
+}
+
+function slugifySpecialistName(raw: string) {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+}
+
+function defaultSpecialistTitle(role: 'Planner' | 'Builder' | 'Critic') {
+  return role === 'Planner'
+    ? 'Verification Planning Planner'
+    : role === 'Builder'
+      ? 'Verification Reliability Builder'
+      : 'Verification Reliability Critic'
+}
+
+function buildSpecialistMarkdownTemplate({
+  role,
+  specialistCode,
+  title,
+  scope,
+  useWhen,
+  outOfScope,
+  evaluationCriteria,
+}: {
+  role: 'Planner' | 'Builder' | 'Critic'
+  specialistCode: string
+  title: string
+  scope: string
+  useWhen: string
+  outOfScope: string
+  evaluationCriteria: string
+}) {
+  const resolvedTitle = title.trim() || defaultSpecialistTitle(role)
+  const resolvedCode = specialistCode.trim() || (role === 'Planner' ? 'P-13' : role === 'Builder' ? 'B-08' : 'C-09')
+  const roleLabel = role
+  return [
+    `# Specialist: ${resolvedTitle} (${resolvedCode})`,
+    '',
+    `You are the ${resolvedTitle}.`,
+    '',
+    '## Scope',
+    '',
+    scope.trim() || '[Describe the specialist boundary and primary responsibility.]',
+    '',
+    '## Use This Specialist When',
+    '',
+    useWhen.trim() || '[Describe the situations where this specialist should be chosen.]',
+    '',
+    '## Out of Scope',
+    '',
+    outOfScope.trim() || '[Describe what this specialist should not cover.]',
+    '',
+    '## Evaluation Criteria',
+    '',
+    evaluationCriteria.trim() || '[Describe how good output should be judged.]',
+    '',
+    '## Output Style',
+    '',
+    `- Stay within the ${roleLabel} role boundary.`,
+    '- Keep recommendations concrete, scoped, and reviewable.',
+  ].join('\n')
+}
+
+function extractMarkdownSection(markdown: string, heading: string) {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`^##\\s+${escaped}\\s*$([\\s\\S]*?)(?=^##\\s+|\\Z)`, 'im')
+  const match = markdown.match(pattern)
+  return match?.[1]?.trim() ?? ''
+}
+
+function parseSpecialistMarkdownImport(markdown: string, role: 'Planner' | 'Builder' | 'Critic') {
+  const headerMatch = markdown.match(/^#\s+Specialist:\s*(.+?)\s*\(([A-Z]-\d{2})\)\s*$/im)
+  const title = headerMatch?.[1]?.trim() ?? ''
+  const specialistCode = headerMatch?.[2]?.trim() ?? ''
+  const scope = extractMarkdownSection(markdown, 'Scope')
+  const useWhen = extractMarkdownSection(markdown, 'Use This Specialist When')
+  const outOfScope = extractMarkdownSection(markdown, 'Out of Scope')
+  const evaluationCriteria = extractMarkdownSection(markdown, 'Evaluation Criteria')
+  const inferredSlug = slugifySpecialistName(title)
+
+  if (!title && !scope && !useWhen && !outOfScope && !evaluationCriteria) {
+    return {
+      error: `Could not parse a specialist markdown template for ${role}.`,
+    }
+  }
+
+  return {
+    specialistCode,
+    title,
+    slug: inferredSlug,
+    scope,
+    useWhen,
+    outOfScope,
+    evaluationCriteria,
+  }
+}
+
+function validateImportedSpecialistDraft(
+  parsed: ReturnType<typeof parseSpecialistMarkdownImport>,
+  role: 'Planner' | 'Builder' | 'Critic',
+) {
+  if ('error' in parsed) {
+    return {
+      ok: false,
+      severity: 'error' as const,
+      message: parsed.error ?? `Could not parse a specialist markdown template for ${role}.`,
+    }
+  }
+
+  const expectedPrefix = role === 'Planner' ? 'P-' : role === 'Builder' ? 'B-' : 'C-'
+  const issues: string[] = []
+
+  if (!parsed.specialistCode) {
+    issues.push(`missing specialist code in header; expected ${expectedPrefix}xx`)
+  } else if (!new RegExp(`^${expectedPrefix}\\d{2}$`, 'i').test(parsed.specialistCode)) {
+    issues.push(`code ${parsed.specialistCode} does not match role ${role}; expected prefix ${expectedPrefix}`)
+  }
+
+  if (!parsed.title.trim()) {
+    issues.push('missing title in header')
+  }
+
+  if (!parsed.slug.trim()) {
+    issues.push('could not derive a valid slug from the title')
+  }
+
+  if (issues.length > 0) {
+    return {
+      ok: false,
+      severity: 'warning' as const,
+      message: `Prefill applied with validation issues: ${issues.join('; ')}. Review the fields before creating.`,
+    }
+  }
+
+  return {
+    ok: true,
+    severity: 'success' as const,
+    message: `Markdown prefill is valid for ${role}. Review the fields, then create a new specialist asset if needed.`,
+  }
+}
+
+function mergeCreatedSpecialistCandidate(
+  data: SpecialistCandidatesData | null,
+  result: CreateSpecialistResult,
+): SpecialistCandidatesData | null {
+  if (!data || data.role !== result.role) return data
+  if (data.candidates.some((candidate) => candidate.code === result.specialist_code)) {
+    return data
+  }
+
+  const createdCandidate: SpecialistCandidateItem = {
+    code: result.specialist_code,
+    name: result.title,
+    score: 0,
+    reason: 'Newly created specialist for this session. Assign explicitly if this run should use it.',
+    use_when: result.use_when,
+    path: result.relative_path,
+    scope: result.scope,
+    out_of_scope: result.out_of_scope,
+    evaluation_criteria: result.evaluation_criteria,
+    is_recommended: false,
+    is_current: false,
+  }
+
+  return {
+    ...data,
+    candidates: [createdCandidate, ...data.candidates],
+  }
+}
+
+function SpecialistSelectionModal({
+  taxonomy,
+  runName,
+  candidatesData,
+  initialCode,
+  createResult,
+  onClose,
+  onConfirm,
+  onCreateNew,
+}: {
+  taxonomy: string
+  runName: string
+  candidatesData: SpecialistCandidatesData
+  initialCode?: string | null
+  createResult?: CreateSpecialistResult | null
+  onClose: () => void
+  onConfirm: (code: string) => Promise<void>
+  onCreateNew: (suggestedCode?: string) => void
+}) {
+  const [selectedCode, setSelectedCode] = useState(initialCode ?? candidatesData.current_code ?? '')
+  const [confirming, setConfirming] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setSelectedCode(initialCode ?? candidatesData.current_code ?? '')
+  }, [initialCode, candidatesData.current_code])
+
+  const selected =
+    candidatesData.candidates.find((candidate) => candidate.code === selectedCode) ??
+    candidatesData.candidates.find((candidate) => candidate.is_recommended) ??
+    candidatesData.candidates[candidatesData.candidates.length - 1]
+  const selectedIsGeneric = !selected?.code
+
+  const handleConfirm = async () => {
+    setConfirming(true)
+    setError(null)
+    try {
+      await onConfirm(selected?.code ?? '')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to assign specialist')
+    } finally {
+      setConfirming(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/60">
+        <div className="flex items-start justify-between gap-4 border-b border-zinc-800 px-5 py-4">
+          <div>
+            <div className="text-lg font-bold text-zinc-100">
+              {candidatesData.phase === 'IMPROVE_NEEDED' ? 'Select Specialist' : `Select ${candidatesData.role} Specialist`}
+            </div>
+            <div className="mt-1 text-sm text-zinc-400">
+              {candidatesData.phase === 'PLAN_NEEDED' || candidatesData.phase === 'BUILD_NEEDED' || candidatesData.phase === 'REVIEW_NEEDED'
+                ? `Inspect the ${candidatesData.role} library for ${candidatesData.phase}, then assign an existing specialist, use generic explicitly, or branch into specialist authoring.`
+                : 'Inspect the current library, then assign an existing specialist, use generic explicitly, or branch into specialist authoring.'}
+            </div>
+            <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+              {taxonomy} / {runName}
+            </div>
+          </div>
+          <button onClick={onClose} className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:border-zinc-500 hover:text-white">
+            Close
+          </button>
+        </div>
+
+        {createResult && (
+          <div className="border-b border-emerald-500/20 bg-emerald-500/10 px-5 py-3 text-sm text-emerald-100">
+            <div>
+              Specialist created successfully: <span className="font-mono">{createResult.specialist_code}</span> at{' '}
+              <span className="font-mono text-emerald-200/80">{createResult.relative_path}</span>.
+            </div>
+            <div className="mt-1 text-emerald-200/90">
+              Registry updated. Next step: assign this specialist to the current run if you want to use it now.
+            </div>
+          </div>
+        )}
+
+        <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(18rem,24rem)_1fr]">
+          <div className="overflow-y-auto border-b border-zinc-800 p-4 lg:border-b-0 lg:border-r">
+            <div className="mb-3 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Candidates</div>
+            <div className="space-y-2">
+              {candidatesData.candidates.map((candidate) => {
+                const selectedState = selected?.code === candidate.code
+                const isGeneric = !candidate.code
+                return (
+                  <button
+                    key={`${candidate.code || 'generic'}-${candidate.name}`}
+                    type="button"
+                    onClick={() => setSelectedCode(candidate.code)}
+                    className={`w-full rounded border p-3 text-left transition-colors ${
+                      selectedState
+                        ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-50'
+                        : isGeneric
+                          ? 'border-amber-500/25 bg-amber-500/5 text-amber-50 hover:border-amber-400/40 hover:bg-amber-500/10'
+                          : 'border-zinc-800 bg-zinc-900/40 text-zinc-200 hover:border-zinc-700 hover:bg-zinc-900/70'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11px] font-semibold">{candidate.code || 'GENERIC'}</span>
+                      <span className="text-[11px] text-zinc-400">{isGeneric ? 'Use Generic For This Run' : candidate.name}</span>
+                      {candidate.is_recommended && (
+                        <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-300">
+                          recommended
+                        </span>
+                      )}
+                      {candidate.is_current && (
+                        <span className="rounded border border-indigo-500/30 bg-indigo-500/10 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-indigo-300">
+                          current
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 text-[10px] text-zinc-500">{candidate.use_when}</div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="min-h-0 overflow-y-auto p-5">
+            {selected ? (
+              <div className="space-y-4">
+                <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
+                  <div className="flex items-center gap-2">
+                    <div className="font-mono text-sm font-semibold text-zinc-100">{selected.code || 'GENERIC'}</div>
+                    <div className="text-sm text-zinc-400">{selectedIsGeneric ? 'Use Generic For This Run' : selected.name}</div>
+                  </div>
+                  <div className="mt-2 grid gap-3 text-xs text-zinc-300 lg:grid-cols-2">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Path</div>
+                      <div className="mt-1 font-mono text-zinc-300">{selected.path || '(generic fallback)'}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Reason</div>
+                      <div className="mt-1 text-zinc-300">{selected.reason}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-3">
+                  <div className="rounded border border-zinc-800 bg-black/20 p-4">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Scope</div>
+                    <div className="mt-2 text-sm text-zinc-200">{selected.scope || 'No scope summary available.'}</div>
+                  </div>
+                  <div className="rounded border border-zinc-800 bg-black/20 p-4">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Use When</div>
+                    <div className="mt-2 text-sm text-zinc-200">{selected.use_when || 'No use-when summary available.'}</div>
+                  </div>
+                  <div className="rounded border border-zinc-800 bg-black/20 p-4">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Out Of Scope</div>
+                    <div className="mt-2 text-sm text-zinc-200">{selected.out_of_scope || 'No out-of-scope summary available.'}</div>
+                  </div>
+                </div>
+
+                <div className="rounded border border-zinc-800 bg-black/20 p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Evaluation Criteria</div>
+                  <div className="mt-2 text-sm text-zinc-200">{selected.evaluation_criteria || 'No evaluation summary available.'}</div>
+                </div>
+
+                {error && <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</div>}
+
+                <div className="flex flex-wrap justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => onCreateNew(selected.code || undefined)}
+                    className="rounded border border-fuchsia-500/30 bg-fuchsia-500/15 px-4 py-2 text-sm font-semibold text-fuchsia-100 hover:bg-fuchsia-500/25"
+                  >
+                    Create New Specialist Library Asset
+                  </button>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="rounded border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-semibold text-zinc-300 hover:border-zinc-500 hover:text-white"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={confirming}
+                      onClick={() => void handleConfirm()}
+                      className="rounded border border-emerald-500/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-50"
+                    >
+                      {confirming ? 'Assigning...' : selectedIsGeneric ? 'Use Generic For This Run' : `Assign ${selected.code}`}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-zinc-500">Select a specialist candidate to inspect its details.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CreateSpecialistModal({
+  taxonomy,
+  runName,
+  role,
+  suggestedCode,
+  onClose,
+  onCreated,
+}: {
+  taxonomy: string
+  runName: string
+  role: 'Planner' | 'Builder' | 'Critic'
+  suggestedCode?: string | null
+  onClose: () => void
+  onCreated: (result: CreateSpecialistResult) => Promise<void>
+}) {
+  const [specialistCode, setSpecialistCode] = useState(suggestedCode ?? '')
+  const [slug, setSlug] = useState('')
+  const [title, setTitle] = useState('')
+  const [scope, setScope] = useState('')
+  const [useWhen, setUseWhen] = useState('')
+  const [outOfScope, setOutOfScope] = useState('')
+  const [evaluationCriteria, setEvaluationCriteria] = useState('')
+  const [importMarkdown, setImportMarkdown] = useState('')
+  const [importStatus, setImportStatus] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const importFileRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    setSpecialistCode(suggestedCode ?? '')
+  }, [suggestedCode])
+
+  const pathPreview = deriveSpecialistPathPreview(role, specialistCode, slug)
+  const templateMarkdown = buildSpecialistMarkdownTemplate({
+    role,
+    specialistCode,
+    title,
+    scope,
+    useWhen,
+    outOfScope,
+    evaluationCriteria,
+  })
+  const formComplete = [
+    specialistCode,
+    slug,
+    title,
+    scope,
+    useWhen,
+    outOfScope,
+    evaluationCriteria,
+  ].every((value) => value.trim() !== '')
+
+  const applyTemplateDefaults = () => {
+    setTitle((current) => current || defaultSpecialistTitle(role))
+    setSlug((current) => current || slugifySpecialistName(defaultSpecialistTitle(role)))
+    setScope((current) => current || 'Focus on the specialist-specific responsibility boundary and primary decision lens.')
+    setUseWhen((current) => current || 'Use this specialist when the run clearly benefits from its dedicated operating lens.')
+    setOutOfScope((current) => current || 'Do not broaden into adjacent work that belongs to another specialist or the generic role prompt.')
+    setEvaluationCriteria((current) => current || 'Output should stay role-aligned, concrete, scoped, and easy to review.')
+    setImportStatus('Loaded starter template defaults into the form.')
+  }
+
+  const applyImportedMarkdown = (markdown: string) => {
+    const parsed = parseSpecialistMarkdownImport(markdown, role)
+    if ('error' in parsed) {
+      setImportStatus(parsed.error ?? `Could not parse a specialist markdown template for ${role}.`)
+      return
+    }
+    if (parsed.specialistCode) setSpecialistCode(parsed.specialistCode)
+    if (parsed.title) setTitle(parsed.title)
+    if (parsed.slug) setSlug(parsed.slug)
+    if (parsed.scope) setScope(parsed.scope)
+    if (parsed.useWhen) setUseWhen(parsed.useWhen)
+    if (parsed.outOfScope) setOutOfScope(parsed.outOfScope)
+    if (parsed.evaluationCriteria) setEvaluationCriteria(parsed.evaluationCriteria)
+    const validation = validateImportedSpecialistDraft(parsed, role)
+    setImportStatus(validation.message)
+  }
+
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      const content = await file.text()
+      setImportMarkdown(content)
+      applyImportedMarkdown(content)
+    } catch {
+      setImportStatus('Failed to read the selected markdown file.')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  const copyTemplateMarkdown = async () => {
+    try {
+      await navigator.clipboard.writeText(templateMarkdown)
+      setImportStatus('Copied markdown template to clipboard.')
+    } catch {
+      setImportStatus('Failed to copy markdown template.')
+    }
+  }
+
+  const handleCreate = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/specialists/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role,
+          specialist_code: specialistCode,
+          slug,
+          title,
+          scope,
+          use_when: useWhen,
+          out_of_scope: outOfScope,
+          evaluation_criteria: evaluationCriteria,
+        }),
+      })
+      const data = (await resp.json()) as CreateSpecialistResult | { detail?: string }
+      if (!resp.ok) throw new Error((data as { detail?: string }).detail || `HTTP ${resp.status}`)
+      await onCreated(data as CreateSpecialistResult)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create specialist')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[115] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+      <div className="max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/60">
+        <div className="border-b border-zinc-800 px-5 py-4">
+          <div className="text-lg font-bold text-zinc-100">Create New {role} Specialist</div>
+          <div className="mt-1 text-sm text-zinc-400">
+            Create a reusable library asset. This does not assign it to the run until you confirm assignment separately.
+          </div>
+          <div className="mt-2 text-xs text-amber-200/90">
+            Create only. Existing specialist codes and files cannot be overwritten here.
+          </div>
+        </div>
+
+        <div className="space-y-4 p-5">
+          <div className="rounded border border-emerald-500/20 bg-emerald-500/5 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300">Markdown Helpers</div>
+                <div className="mt-1 text-sm text-zinc-300">
+                  Start from a template or prefill the form from markdown. This does not import or overwrite a library asset.
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={applyTemplateDefaults}
+                  className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/20"
+                >
+                  Load Template Defaults
+                </button>
+                <button
+                  type="button"
+                  onClick={() => importFileRef.current?.click()}
+                  className="rounded border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/20"
+                >
+                  Prefill From .md File
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyTemplateMarkdown()}
+                  className="rounded border border-fuchsia-500/30 bg-fuchsia-500/10 px-3 py-1.5 text-xs font-semibold text-fuchsia-100 hover:bg-fuchsia-500/20"
+                >
+                  Copy Markdown Template
+                </button>
+              </div>
+            </div>
+
+            <input
+              ref={importFileRef}
+              type="file"
+              accept=".md,text/markdown"
+              onChange={(e) => void handleImportFile(e)}
+              className="hidden"
+            />
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <label className="block">
+                <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Prefill From Markdown</div>
+                <textarea
+                  value={importMarkdown}
+                  onChange={(e) => setImportMarkdown(e.target.value)}
+                  className="min-h-40 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 font-mono text-xs text-zinc-100"
+                  placeholder="Paste specialist markdown here to prefill the form. Review role/code/slug before creating."
+                />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => applyImportedMarkdown(importMarkdown)}
+                    disabled={importMarkdown.trim() === ''}
+                    className="rounded border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-50"
+                  >
+                    Apply Markdown Prefill
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportMarkdown(templateMarkdown)}
+                    className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:border-zinc-500 hover:text-white"
+                  >
+                    Send Template To Import Box
+                  </button>
+                </div>
+              </label>
+
+              <div className="rounded border border-zinc-800 bg-black/20 p-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Markdown Template Preview</div>
+                  <CopyButton text={templateMarkdown} />
+                </div>
+                <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-zinc-950/70 p-3 font-mono text-[11px] text-zinc-300">{templateMarkdown}</pre>
+              </div>
+            </div>
+
+            {importStatus && (
+              <div className={`mt-3 rounded border px-3 py-2 text-xs ${
+                importStatus.includes('valid for')
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+                  : importStatus.includes('validation issues')
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-100'
+                    : 'border-zinc-700 bg-black/20 text-zinc-300'
+              }`}>
+                {importStatus}
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            <label className="block">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Code</div>
+              <input value={specialistCode} onChange={(e) => setSpecialistCode(e.target.value)} className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100" placeholder={role === 'Planner' ? 'P-13' : role === 'Builder' ? 'B-08' : 'C-09'} />
+            </label>
+            <label className="block">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Slug</div>
+              <input value={slug} onChange={(e) => setSlug(e.target.value)} className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100" placeholder="workflow-integrity-critic" />
+            </label>
+            <label className="block">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Title</div>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100" placeholder="Workflow Integrity Critic" />
+            </label>
+          </div>
+
+          <div className="rounded border border-cyan-500/20 bg-cyan-500/5 p-4 text-sm">
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-300">Write Preview</div>
+            <div className="mt-2 text-zinc-200">{pathPreview || 'Enter role-aligned code and slug to preview the backend-derived library path.'}</div>
+            <div className="mt-2 text-xs text-zinc-500">Backend derives the final path from role + code + slug. The UI does not write arbitrary file paths.</div>
+          </div>
+
+          <label className="block">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Scope</div>
+            <textarea value={scope} onChange={(e) => setScope(e.target.value)} className="min-h-24 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100" />
+          </label>
+
+          <label className="block">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Use This Specialist When</div>
+            <textarea value={useWhen} onChange={(e) => setUseWhen(e.target.value)} className="min-h-24 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100" />
+          </label>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="block">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Out Of Scope</div>
+              <textarea value={outOfScope} onChange={(e) => setOutOfScope(e.target.value)} className="min-h-28 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100" />
+            </label>
+            <label className="block">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Evaluation Criteria</div>
+              <textarea value={evaluationCriteria} onChange={(e) => setEvaluationCriteria(e.target.value)} className="min-h-28 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100" />
+            </label>
+          </div>
+
+          {error && <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</div>}
+
+          <div className="flex justify-end gap-3">
+            <button onClick={onClose} className="rounded border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-semibold text-zinc-300 hover:border-zinc-500 hover:text-white">
+              Cancel
+            </button>
+            <button
+              disabled={!formComplete || saving}
+              onClick={() => void handleCreate()}
+              className="rounded border border-fuchsia-500/40 bg-fuchsia-500/15 px-4 py-2 text-sm font-semibold text-fuchsia-100 hover:bg-fuchsia-500/25 disabled:opacity-50"
+            >
+              {saving ? 'Creating...' : 'Create Specialist'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ViewerConfigModal({
+  config,
+  savingKey,
+  onClose,
+  onUpdate,
+}: {
+  config: ViewerConfig | null
+  savingKey: string | null
+  onClose: () => void
+  onUpdate: (patch: Partial<Pick<ViewerConfig, 'execution_mode' | 'cli_tool_mode' | 'build_max_turns' | 'run_detail_refresh_ms'>>) => Promise<void>
+}) {
+  const [maxTurnsInput, setMaxTurnsInput] = useState<string>('')
+  useEffect(() => {
+    if (config?.build_max_turns !== undefined) setMaxTurnsInput(String(config.build_max_turns))
+  }, [config?.build_max_turns])
+  const sourceLabel = (source?: ViewerConfig['execution_mode_source']) => {
+    if (source === 'env') return 'Env override'
+    if (source === 'viewer_config') return 'viewer.config.json'
+    return 'Default'
+  }
+
+  const boolLabel = (value?: boolean) => (value ? 'Configured' : 'Not set')
+
+  return (
+    <div className="fixed inset-0 z-[112] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-4xl rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/60">
+        <div className="flex items-start justify-between gap-4 border-b border-zinc-800 px-5 py-4">
+          <div>
+            <div className="text-lg font-bold text-zinc-100">Viewer Config</div>
+            <div className="mt-1 text-sm text-zinc-400">
+              Edit global execution policy here and inspect which config source is currently effective.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:border-zinc-500 hover:text-white"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="space-y-4 p-5">
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className="rounded border border-zinc-800 bg-black/20 p-4">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Execution Mode</div>
+                  <div className="mt-0.5 text-sm text-zinc-200">{config?.execution_mode === 'provider' ? 'API' : 'CLI'}</div>
+                </div>
+                {savingKey?.startsWith('execution:') && <span className="text-[10px] text-sky-200">Saving...</span>}
+              </div>
+              <div className="mb-2 text-[10px] text-zinc-500">Source: {sourceLabel(config?.execution_mode_source)}</div>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  ['wrapper', 'CLI'],
+                  ['provider', 'API'],
+                ] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => void onUpdate({ execution_mode: mode })}
+                    disabled={!config || config.execution_mode === mode || savingKey !== null}
+                    className={`rounded border px-3 py-2 text-[11px] font-semibold transition-colors ${
+                      config?.execution_mode === mode
+                        ? 'border-sky-400/50 bg-sky-500/20 text-sky-50'
+                        : 'border-zinc-700 bg-zinc-900/70 text-zinc-300 hover:border-sky-500/40 hover:text-zinc-100'
+                    } disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded border border-zinc-800 bg-black/20 p-4">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Available CLI</div>
+                  <div className="mt-0.5 text-sm text-zinc-200">
+                    {config?.cli_tool_mode === 'claude' ? 'Claude' : config?.cli_tool_mode === 'codex' ? 'Codex' : 'Both'}
+                  </div>
+                </div>
+                {savingKey?.startsWith('cli:') && <span className="text-[10px] text-sky-200">Saving...</span>}
+              </div>
+              <div className="mb-2 text-[10px] text-zinc-500">
+                `act`: {config?.act_wrapper_backend || '-'} ({sourceLabel(config?.act_wrapper_backend_source)}) · `build`: {config?.build_wrapper_backend || '-'} ({sourceLabel(config?.build_wrapper_backend_source)})
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  ['claude', 'Claude'],
+                  ['codex', 'Codex'],
+                  ['both', 'Both'],
+                ] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => void onUpdate({ cli_tool_mode: mode })}
+                    disabled={!config || config.cli_tool_mode === mode || savingKey !== null}
+                    className={`rounded border px-3 py-2 text-[11px] font-semibold transition-colors ${
+                      config?.cli_tool_mode === mode
+                        ? 'border-sky-400/50 bg-sky-500/20 text-sky-50'
+                        : 'border-zinc-700 bg-zinc-900/70 text-zinc-300 hover:border-sky-500/40 hover:text-zinc-100'
+                    } disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 text-[10px] text-zinc-500">
+                Both = `act` prefers Codex, tool-enabled `build` prefers Claude.
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded border border-zinc-800 bg-black/20 p-4">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-zinc-500">Build Max Turns</div>
+                <div className="mt-0.5 text-sm text-zinc-200">{config?.build_max_turns ?? 10} turns</div>
+              </div>
+              {savingKey === 'build_max_turns' && <span className="text-[10px] text-sky-200">Saving...</span>}
+            </div>
+            <div className="mb-2 text-[10px] text-zinc-500">Max agentic turns passed to the build wrapper as <span className="font-mono">-MaxTurns</span>. Default: 10. Range: 1–50.</div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={50}
+                step={1}
+                value={maxTurnsInput}
+                onChange={(e) => setMaxTurnsInput(e.target.value)}
+                onBlur={() => {
+                  const v = parseInt(maxTurnsInput, 10)
+                  if (!isNaN(v) && v >= 1 && v <= 50 && v !== config?.build_max_turns) {
+                    void onUpdate({ build_max_turns: v })
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const v = parseInt(maxTurnsInput, 10)
+                    if (!isNaN(v) && v >= 1 && v <= 50 && v !== config?.build_max_turns) {
+                      void onUpdate({ build_max_turns: v })
+                    }
+                  }
+                }}
+                disabled={savingKey !== null}
+                className="w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-200 focus:border-sky-500 focus:outline-none disabled:cursor-not-allowed disabled:text-zinc-500"
+              />
+              <span className="text-[10px] text-zinc-500">Enter or blur to save</span>
+            </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-3">
+            <div className="rounded border border-zinc-800 bg-black/20 p-4 text-xs">
+              <div className="mb-2 text-[10px] uppercase tracking-wide text-zinc-500">Config Files</div>
+              <div className="space-y-2 text-zinc-300">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Viewer Config</div>
+                  <div className="mt-0.5 break-all font-mono text-[11px] text-zinc-200">{config?.config_path || '-'}</div>
+                  <div className="mt-0.5 text-[10px] text-zinc-500">{config ? (config.config_exists ? 'Present' : 'Missing') : '-'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Dotenv</div>
+                  <div className="mt-0.5 break-all font-mono text-[11px] text-zinc-200">{config?.dotenv_path || '-'}</div>
+                  <div className="mt-0.5 text-[10px] text-zinc-500">{config ? (config.dotenv_exists ? 'Present' : 'Missing') : '-'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Settings Module</div>
+                  <div className="mt-0.5 break-all font-mono text-[11px] text-zinc-200">{config?.settings_path || '-'}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded border border-zinc-800 bg-black/20 p-4 text-xs">
+              <div className="mb-2 text-[10px] uppercase tracking-wide text-zinc-500">Framework Paths</div>
+              <div className="space-y-2 text-zinc-300">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Root</div>
+                  <div className="mt-0.5 break-all font-mono text-[11px] text-zinc-200">{config?.framework_root || '-'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Runs</div>
+                  <div className="mt-0.5 break-all font-mono text-[11px] text-zinc-200">{config?.runs_dir || '-'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Template</div>
+                  <div className="mt-0.5 break-all font-mono text-[11px] text-zinc-200">{config?.template_dir || '-'}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded border border-zinc-800 bg-black/20 p-4 text-xs">
+              <div className="mb-2 text-[10px] uppercase tracking-wide text-zinc-500">Provider Defaults</div>
+              <div className="space-y-2 text-zinc-300">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">OpenAI</div>
+                  <div className="mt-0.5 font-mono text-[11px] text-zinc-200">{config?.default_openai_model || '-'}</div>
+                  <div className="mt-0.5 text-[10px] text-zinc-500">API key: {boolLabel(config?.openai_api_key_configured)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Anthropic</div>
+                  <div className="mt-0.5 font-mono text-[11px] text-zinc-200">{config?.default_anthropic_model || '-'}</div>
+                  <div className="mt-0.5 text-[10px] text-zinc-500">API key: {boolLabel(config?.anthropic_api_key_configured)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Gemini</div>
+                  <div className="mt-0.5 font-mono text-[11px] text-zinc-200">{config?.default_gemini_model || '-'}</div>
+                  <div className="mt-0.5 text-[10px] text-zinc-500">API key: {boolLabel(config?.gemini_api_key_configured)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded border border-zinc-800 bg-black/20 p-4 text-[11px] text-zinc-400">
+            Viewer policy lives in `viewer.config.json` or `APSF_VIEWER_*` env vars. Provider defaults and API keys come from `.env` / process env via `Settings`. Run-local overrides still live in each run's `execution-assignment.md` and `model-assignment.md`.
+          </div>
         </div>
       </div>
     </div>
@@ -624,11 +1887,14 @@ function ExecutionLogModal({
 }
 
 export default function App() {
+  const HEADER_COMPACT_ENTER_SCROLL = 220
+  const HEADER_COMPACT_EXIT_SCROLL = 72
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [matrixRows, setMatrixRows] = useState<MatrixRow[]>([])
   const [recentExecutions, setRecentExecutions] = useState<ActionExecutionRecord[]>([])
-  const [workspaceTab, setWorkspaceTab] = useState<'detail' | 'management' | 'activity'>('detail')
+  const [workspaceTab, setWorkspaceTab] = useState<'detail' | 'management' | 'activity' | 'agent-os'>('agent-os')
   const [operatorFilter, setOperatorFilter] = useState<'active' | 'recent' | 'all'>('active')
+  const [humanBlockerFilter, setHumanBlockerFilter] = useState<'all' | 'blocked'>('all')
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [selectedRun, setSelectedRun] = useState<string | null>(null)
   const [selectedTaxonomy, setSelectedTaxonomy] = useState<string | null>(null)
@@ -642,21 +1908,50 @@ export default function App() {
   const [selectedExecutionLog, setSelectedExecutionLog] = useState<ActionExecutionRecord | null>(null)
   const [saveCommentResult, setSaveCommentResult] = useState<SaveCommentResult | null>(null)
   const [history, setHistory] = useState<RunHistory | null>(null)
+  const [historyRun, setHistoryRun] = useState<string | null>(null)
+  const [viewerConfig, setViewerConfig] = useState<ViewerConfig | null>(null)
+  const [viewerConfigSavingKey, setViewerConfigSavingKey] = useState<string | null>(null)
+  const [viewerConfigModalOpen, setViewerConfigModalOpen] = useState(false)
   const [codexResult, setCodexResult] = useState<CodexBridgeResult | null>(null)
   const [codexError, setCodexError] = useState<string | null>(null)
   const [codexLoadingPreset, setCodexLoadingPreset] = useState<CodexBridgeResult['preset_id'] | null>(null)
   const [codexTargetKey, setCodexTargetKey] = useState<string | null>(null)
   const [modalConfig, setModalConfig] = useState<ModalConfig | null>(null)
-  const [executingRuns, setExecutingRuns] = useState<Record<string, string>>({})
+  const [executingRuns, setExecutingRuns] = useState<Record<string, RunningExecutionState>>({})
+  const [executionNow, setExecutionNow] = useState(() => Date.now())
   const [savingActionId, setSavingActionId] = useState<string | null>(null)
   const [rerunComments, setRerunComments] = useState<Record<string, string>>({})
   const [savedCommentByAction, setSavedCommentByAction] = useState<Record<string, string>>({})
+  const [judgeChatOpen, setJudgeChatOpen] = useState(false)
+  const [judgeChatMessages, setJudgeChatMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
+  const [judgeChatInput, setJudgeChatInput] = useState('')
+  const [judgeChatLoading, setJudgeChatLoading] = useState(false)
+  const [specialistCandidates, setSpecialistCandidates] = useState<SpecialistCandidatesData | null>(null)
+  const [specialistModalOpen, setSpecialistModalOpen] = useState(false)
+  const [createSpecialistModalOpen, setCreateSpecialistModalOpen] = useState(false)
+  const [createdSpecialistResult, setCreatedSpecialistResult] = useState<CreateSpecialistResult | null>(null)
+  const [specialistModalSelectedCode, setSpecialistModalSelectedCode] = useState<string | null>(null)
+  const [agentOSData, setAgentOSData] = useState<AgentOSInfo | null>(null)
+  const [agentOSLoading, setAgentOSLoading] = useState(false)
+  const [selectedRecoveryCheckpointId, setSelectedRecoveryCheckpointId] = useState<string | null>(null)
+  const [selectedRecoverySnapshotId, setSelectedRecoverySnapshotId] = useState<string | null>(null)
+  const [selectedRecoveryApplyTraceId, setSelectedRecoveryApplyTraceId] = useState<string | null>(null)
+  const [agentOSFeedback, setAgentOSFeedback] = useState<AgentOSActionFeedback | null>(null)
   const [isLoadingRuns, setIsLoadingRuns] = useState(true)
   const [runsError, setRunsError] = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [headerCompact, setHeaderCompact] = useState(false)
+  const [currentViewOpen, setCurrentViewOpen] = useState(false)
   const detailRequestIdRef = useRef(0)
   const refreshRequestIdRef = useRef(0)
   const headerCompactRef = useRef(false)
+  const lastWorkspaceScrollTopRef = useRef(0)
+  const currentActiveDetail = targetDetail ?? detail
+  const activeDetailPhase = currentActiveDetail?.phase ?? null
+  const specialistPhaseOverride =
+    currentActiveDetail?.phase === 'IMPROVE_NEEDED' && currentActiveDetail?.judge_recommendation?.suggested_return_phase
+      ? currentActiveDetail.judge_recommendation.suggested_return_phase
+      : null
 
   const fetchRuns = async () => {
     setRunsError(null)
@@ -672,18 +1967,44 @@ export default function App() {
     }
   }
 
+  const parseJsonOrThrowText = async (resp: Response) => {
+    const text = await resp.text()
+    if (!text) return {}
+    try {
+      return JSON.parse(text)
+    } catch {
+      throw new Error(text)
+    }
+  }
+
   const loadRunDetail = async (taxonomy: string, runName: string) => {
     const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}`)
-    return resp.json()
+    const data = await parseJsonOrThrowText(resp)
+    if (!resp.ok) {
+      const detail = typeof data === 'object' && data && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : ''
+      throw new Error(detail || `Failed to load run detail (${resp.status})`)
+    }
+    return data
   }
 
   const loadHistory = async (taxonomy: string, runName: string): Promise<RunHistory> => {
     const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/history`)
-    return resp.json()
+    const data = await parseJsonOrThrowText(resp)
+    if (!resp.ok) {
+      const detail = typeof data === 'object' && data && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : ''
+      throw new Error(detail || `Failed to load history (${resp.status})`)
+    }
+    return data as RunHistory
   }
 
   const loadOperatorMatrix = async (): Promise<MatrixRow[]> => {
     const resp = await fetch(`${API_BASE}/operator-matrix`)
+    return resp.json()
+  }
+
+  const loadViewerConfig = async (): Promise<ViewerConfig> => {
+    const resp = await fetch(`${API_BASE}/viewer-config`)
+    if (!resp.ok) throw new Error(`Failed to load viewer config (${resp.status})`)
     return resp.json()
   }
 
@@ -692,12 +2013,173 @@ export default function App() {
     return resp.json()
   }
 
+  const updateViewerConfig = async (patch: Partial<Pick<ViewerConfig, 'execution_mode' | 'cli_tool_mode' | 'build_max_turns' | 'run_detail_refresh_ms'>>) => {
+    const savingKey = patch.execution_mode ? `execution:${patch.execution_mode}` : patch.cli_tool_mode ? `cli:${patch.cli_tool_mode}` : patch.build_max_turns !== undefined ? 'build_max_turns' : 'run_detail_refresh_ms'
+    setViewerConfigSavingKey(savingKey)
+    try {
+      const resp = await fetch(`${API_BASE}/viewer-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data.detail ?? `Failed to update viewer config (${resp.status})`)
+      setViewerConfig(data)
+      const [rows, recent] = await Promise.all([
+        loadOperatorMatrix().catch(() => []),
+        loadRecentExecutions().catch(() => []),
+      ])
+      setMatrixRows(rows)
+      setRecentExecutions(recent)
+      if (selectedRun && selectedTaxonomy) {
+        const requestId = ++detailRequestIdRef.current
+        const parentPromise = loadRunDetail(selectedTaxonomy, selectedRun)
+        const historyTarget = targetRun ?? selectedRun
+        const historyPromise = loadHistory(selectedTaxonomy, historyTarget)
+        const targetPromise = targetRun ? loadRunDetail(selectedTaxonomy, targetRun) : parentPromise
+        const [parentData, historyData, targetData] = await Promise.all([parentPromise, historyPromise, targetPromise])
+        if (detailRequestIdRef.current === requestId) {
+          setDetail(parentData)
+          setHistory(historyData)
+          setHistoryRun(historyTarget)
+          setTargetDetail(targetRun ? targetData : null)
+        }
+      }
+    } catch (error) {
+      setModalConfig({
+        title: 'Viewer Config Update Failed',
+        message: error instanceof Error ? error.message : 'Failed to update viewer config.',
+        confirmLabel: 'Close',
+        cancelLabel: 'Dismiss',
+        onConfirm: () => setModalConfig(null),
+      })
+    } finally {
+      setViewerConfigSavingKey(null)
+    }
+  }
+
+  const loadAgentOS = useCallback(async (taxonomy: string, runName: string): Promise<AgentOSInfo> => {
+    const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/agent-os`)
+    const data = await parseJsonOrThrowText(resp)
+    if (!resp.ok) {
+      const detail = typeof data === 'object' && data && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : ''
+      throw new Error(detail || `Failed to load Agent OS (${resp.status})`)
+    }
+    return {
+      run_state: data.run_state ?? null,
+      artifact_manifest: data.artifact_manifest ?? null,
+      gate_results: Array.isArray(data.gate_results) ? data.gate_results : [],
+      force_audit: Array.isArray(data.force_audit) ? data.force_audit : null,
+      recovery_checkpoints: Array.isArray(data.recovery_checkpoints) ? data.recovery_checkpoints : [],
+      recovery_snapshots: Array.isArray(data.recovery_snapshots) ? data.recovery_snapshots : [],
+      recovery_apply_traces: Array.isArray(data.recovery_apply_traces) ? data.recovery_apply_traces : [],
+    }
+  }, [])
+
+  const refreshAgentOS = useCallback(async (taxonomy: string, runName: string) => {
+    setAgentOSLoading(true)
+    try {
+      const data = await loadAgentOS(taxonomy, runName)
+      setAgentOSData(data)
+    } catch {
+      setAgentOSData(null)
+    } finally {
+      setAgentOSLoading(false)
+    }
+  }, [loadAgentOS])
+
+  const openAgentOSWorkspace = (taxonomy?: string | null, runName?: string | null) => {
+    setWorkspaceTab('agent-os')
+    if (taxonomy && runName) {
+    void refreshAgentOS(taxonomy, runName)
+    void loadSpecialistCandidates(taxonomy, runName, specialistPhaseOverride)
+  }
+  }
+
+  const loadSpecialistCandidates = async (taxonomy: string, runName: string, phaseOverride?: string | null): Promise<SpecialistCandidatesData | null> => {
+    try {
+      const params = new URLSearchParams()
+      if (phaseOverride) params.set('phase', phaseOverride)
+      const resp = await fetch(
+        `${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/specialist-candidates${params.toString() ? `?${params.toString()}` : ''}`
+      )
+      if (!resp.ok) return null
+      const data = (await resp.json()) as SpecialistCandidatesData
+      setSpecialistCandidates(data)
+      return data
+    } catch {
+      setSpecialistCandidates(null)
+      return null
+    }
+  }
+
+  const handleConfirmSpecialist = async (code: string) => {
+    if (!selectedTaxonomy || !targetRun || !specialistCandidates) return
+    const resp = await fetch(
+      `${API_BASE}/runs/${selectedTaxonomy}/${encodeURIComponent(targetRun)}/confirm-specialist`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: specialistCandidates.role, specialist_code: code, source: 'operator-accept' }),
+      }
+    )
+    const data = await resp.json().catch(() => ({} as { detail?: string; artifact_path?: string; target_run_name?: string }))
+    if (!resp.ok) {
+      throw new Error((data as { detail?: string }).detail || `HTTP ${resp.status}`)
+    }
+    setCreatedSpecialistResult(null)
+    setSpecialistModalSelectedCode(code)
+    await Promise.all([
+      loadSpecialistCandidates(selectedTaxonomy, targetRun, specialistPhaseOverride),
+      refreshAgentOS(selectedTaxonomy, targetRun),
+      refreshRunContexts(selectedTaxonomy, targetRun),
+    ])
+    if (selectedArtifact === 'execution-assignment.md') {
+      await fetchArtifact('execution-assignment.md')
+    }
+    setAgentOSFeedback({
+      kind: 'success',
+      title: 'Specialist Assignment Updated',
+      detail: `Updated ${(data as { artifact_path?: string }).artifact_path || 'execution-assignment.md'} for ${(data as { target_run_name?: string }).target_run_name || targetRun}.`,
+      actionId: 'act',
+    })
+    setSpecialistModalOpen(false)
+  }
+
+  const handleCreatedSpecialist = async (result: CreateSpecialistResult) => {
+    if (!selectedTaxonomy || !targetRun) return
+    setCreateSpecialistModalOpen(false)
+    const refreshed = await loadSpecialistCandidates(selectedTaxonomy, targetRun, specialistPhaseOverride)
+    const merged = mergeCreatedSpecialistCandidate(refreshed, result)
+    if (merged) {
+      setSpecialistCandidates(merged)
+    }
+    setCreatedSpecialistResult(result)
+    setSpecialistModalSelectedCode(result.specialist_code)
+    setSpecialistModalOpen(true)
+  }
+
+  const openSpecialistSelectionModal = async (initialCode?: string) => {
+    if (!selectedTaxonomy || !targetRun) return
+    const refreshed = await loadSpecialistCandidates(selectedTaxonomy, targetRun, specialistPhaseOverride)
+    if (refreshed) {
+      setSpecialistCandidates(refreshed)
+      setSpecialistModalSelectedCode(initialCode ?? refreshed.current_code ?? '')
+    } else {
+      setSpecialistModalSelectedCode(initialCode ?? '')
+    }
+    setCreatedSpecialistResult(null)
+    setSpecialistModalOpen(true)
+  }
+
   const makeRunKey = (taxonomy: string, runName: string) => `${taxonomy}:${runName}`
   const isRunExecuting = (taxonomy: string, runName: string) => executingRuns[makeRunKey(taxonomy, runName)] !== undefined
-  const executingActionForRun = (taxonomy: string, runName: string) => executingRuns[makeRunKey(taxonomy, runName)] ?? null
+  const executingStateForRun = (taxonomy: string, runName: string) => executingRuns[makeRunKey(taxonomy, runName)] ?? null
+  const executingActionForRun = (taxonomy: string, runName: string) => executingStateForRun(taxonomy, runName)?.actionId ?? null
   const startRunExecution = (taxonomy: string, runName: string, actionId: string) => {
     const runKey = makeRunKey(taxonomy, runName)
-    setExecutingRuns((current) => ({ ...current, [runKey]: actionId }))
+    setExecutingRuns((current) => ({ ...current, [runKey]: { actionId, startedAt: Date.now() } }))
+    setExecutionNow(Date.now())
   }
   const finishRunExecution = (taxonomy: string, runName: string) => {
     const runKey = makeRunKey(taxonomy, runName)
@@ -708,13 +2190,43 @@ export default function App() {
     })
   }
 
+  useEffect(() => {
+    if (Object.keys(executingRuns).length === 0) return
+    const timer = window.setInterval(() => setExecutionNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [executingRuns])
+
   const handleWorkspaceScroll = (scrollTop: number) => {
-    const nextCompact = headerCompactRef.current ? scrollTop > 16 : scrollTop > 160
-    if (nextCompact !== headerCompactRef.current) {
-      headerCompactRef.current = nextCompact
-      setHeaderCompact(nextCompact)
+    const scrollingDown = scrollTop > lastWorkspaceScrollTopRef.current
+    const scrollingUp = scrollTop < lastWorkspaceScrollTopRef.current
+    lastWorkspaceScrollTopRef.current = scrollTop
+
+    if (!headerCompactRef.current) {
+      if (scrollingDown && scrollTop >= HEADER_COMPACT_ENTER_SCROLL) {
+        headerCompactRef.current = true
+        setHeaderCompact(true)
+      }
+      return
+    }
+
+    if (scrollingUp && scrollTop <= HEADER_COMPACT_EXIT_SCROLL) {
+      headerCompactRef.current = false
+      setHeaderCompact(false)
     }
   }
+
+  useEffect(() => {
+    setSelectedRecoveryCheckpointId(null)
+    setSelectedRecoverySnapshotId(null)
+    setSelectedRecoveryApplyTraceId(null)
+    setAgentOSFeedback(null)
+  }, [agentOSData?.run_state?.run_id, selectedRun, selectedTaxonomy])
+
+  useEffect(() => {
+    if (!selectedTaxonomy || !targetRun) return
+    void refreshAgentOS(selectedTaxonomy, targetRun)
+    void loadSpecialistCandidates(selectedTaxonomy, targetRun, specialistPhaseOverride)
+  }, [activeDetailPhase, refreshAgentOS, selectedTaxonomy, targetRun, specialistPhaseOverride])
 
   // Atomic: fetch parent detail + history in parallel, update all state together
   const fetchDetail = async (taxonomy: string, runName: string) => {
@@ -722,7 +2234,7 @@ export default function App() {
     setSelectedRun(runName)
     setSelectedTaxonomy(taxonomy)
     setTargetRun(runName)
-    setWorkspaceTab('detail')
+    setWorkspaceTab('agent-os')
     setSelectedArtifact(null)
     setArtifactContent('')
     setCodexResult(null)
@@ -735,38 +2247,63 @@ export default function App() {
     setDetail(data)
     setTargetDetail(data)
     setHistory(historyData)
+    setHistoryRun(runName)
   }
 
   // Atomic: fetch target detail + history in parallel, update all state together
   const fetchTargetDetail = async (taxonomy: string, runName: string) => {
     const requestId = ++detailRequestIdRef.current
+    const previousTargetRun = targetRun
     setTargetRun(runName)
+    setAgentOSLoading(true)
+    setAgentOSData(null)
     setSelectedArtifact(null)
     setArtifactContent('')
     setCodexResult(null)
     setCodexError(null)
-    const [data, historyData] = await Promise.all([
-      loadRunDetail(taxonomy, runName),
-      loadHistory(taxonomy, runName),
-    ])
-    if (detailRequestIdRef.current !== requestId) return
-    setTargetRun(runName)
-    setTargetDetail(data)
-    setHistory(historyData)
+    try {
+      const [data, historyData, agentData] = await Promise.all([
+        loadRunDetail(taxonomy, runName),
+        loadHistory(taxonomy, runName),
+        loadAgentOS(taxonomy, runName),
+      ])
+      if (detailRequestIdRef.current !== requestId) return
+      setTargetRun(runName)
+      setTargetDetail(data)
+      setHistory(historyData)
+      setHistoryRun(runName)
+      setAgentOSData(agentData)
+      void loadSpecialistCandidates(taxonomy, runName, specialistPhaseOverride)
+    } catch (error) {
+      if (detailRequestIdRef.current !== requestId) return
+      setTargetRun(previousTargetRun ?? detail?.name ?? null)
+      setTargetDetail(previousTargetRun && detail && previousTargetRun !== detail.name ? targetDetail : detail)
+      setAgentOSData(null)
+      setModalConfig({
+        title: 'Failed to Open Target Run',
+        message: error instanceof Error ? error.message : 'Failed to load the selected run context.',
+        onConfirm: () => setModalConfig(null),
+      })
+    } finally {
+      if (detailRequestIdRef.current === requestId) {
+        setAgentOSLoading(false)
+      }
+    }
   }
 
-  const fetchArtifact = async (filename: string) => {
+  const fetchArtifact = useCallback(async (filename: string) => {
     if (!targetRun || !selectedTaxonomy) return
     setSelectedArtifact(filename)
     const resp = await fetch(`${API_BASE}/runs/${selectedTaxonomy}/${encodeURIComponent(targetRun)}/artifacts/${filename}`)
     const data = await resp.json()
     setArtifactContent(data.content ?? '')
-  }
+  }, [selectedTaxonomy, targetRun])
 
   useEffect(() => {
     void fetchRuns()
     void loadOperatorMatrix().then(setMatrixRows).catch(() => setMatrixRows([]))
     void loadRecentExecutions().then(setRecentExecutions).catch(() => setRecentExecutions([]))
+    void loadViewerConfig().then(setViewerConfig).catch(() => setViewerConfig(null))
     const runsTimer = setInterval(() => void fetchRuns(), RUN_LIST_REFRESH_MS)
     const matrixTimer = setInterval(() => {
       void loadOperatorMatrix().then(setMatrixRows).catch(() => {})
@@ -787,19 +2324,25 @@ export default function App() {
       const histTarget = targetRun ?? selectedRun
       const historyPromise = loadHistory(selectedTaxonomy, histTarget)
       const targetPromise = targetRun ? loadRunDetail(selectedTaxonomy, targetRun) : parentPromise
+      const agentPromise = loadAgentOS(selectedTaxonomy, histTarget).catch(() => null)
 
-      const [parentDetail, historyData, targetDetailData] = await Promise.all([
+      const [parentDetail, historyData, targetDetailData, agentData] = await Promise.all([
         parentPromise,
         historyPromise,
         targetPromise,
+        agentPromise,
       ])
       if (refreshRequestIdRef.current !== requestId) return
       setDetail(parentDetail)
       setTargetDetail(targetDetailData)
       setHistory(historyData)
-    }, SELECTED_RUN_REFRESH_MS)
+      setHistoryRun(histTarget)
+      if (agentData) {
+        setAgentOSData(agentData)
+      }
+    }, viewerConfig?.run_detail_refresh_ms ?? SELECTED_RUN_REFRESH_MS)
     return () => clearInterval(detailTimer)
-  }, [selectedRun, selectedTaxonomy, targetRun])
+  }, [loadAgentOS, selectedRun, selectedTaxonomy, targetRun, viewerConfig?.run_detail_refresh_ms])
 
   const refreshRunContexts = async (taxonomy: string, runName: string) => {
     const refreshes: Promise<void>[] = []
@@ -820,11 +2363,40 @@ export default function App() {
         if (selectedTaxonomy === taxonomy && targetRun === runName) {
           setTargetDetail(refreshedRun)
           setHistory(refreshedHistory)
+          setHistoryRun(runName)
         }
       }),
     )
 
     await Promise.all(refreshes)
+  }
+
+  const sendJudgeChatMessage = async () => {
+    if (!judgeChatInput.trim() || judgeChatLoading || !selectedTaxonomy || !activeTargetName) return
+    const userMessage = { role: 'user' as const, content: judgeChatInput.trim() }
+    const newMessages = [...judgeChatMessages, userMessage]
+    setJudgeChatMessages(newMessages)
+    setJudgeChatInput('')
+    setJudgeChatLoading(true)
+    try {
+      const resp = await fetch(`${API_BASE}/runs/${selectedTaxonomy}/${encodeURIComponent(activeTargetName)}/judge-chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: newMessages }),
+      })
+      const text = await resp.text()
+      if (!resp.ok) {
+        let detail = text
+        try { detail = JSON.parse(text).detail ?? text } catch { /* use raw text */ }
+        throw new Error(detail)
+      }
+      const data = JSON.parse(text)
+      setJudgeChatMessages([...newMessages, { role: 'assistant', content: data.reply }])
+    } catch (error) {
+      setJudgeChatMessages([...newMessages, { role: 'assistant', content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` }])
+    } finally {
+      setJudgeChatLoading(false)
+    }
   }
 
   const saveRerunComment = async (action: OperatorAction, taxonomy: string, runName: string) => {
@@ -927,9 +2499,15 @@ export default function App() {
       return
     }
 
+    const activeTargetName = targetDetail?.name ?? targetRun ?? null
+    const matrixTargetsDifferentRun = activeTargetName !== null && activeTargetName !== row.name
+    const matrixContextWarning = matrixTargetsDifferentRun
+      ? `Execution Matrix always targets the top-level run on the card.\n\nCurrent target: ${activeTargetName}\nMatrix target: ${row.name}\n\nUse Run Detail actions if you intend to operate on the current child run.`
+      : null
+
     setModalConfig({
       title: `Confirm ${action.label}`,
-      message: `${row.name}\n\n${action.command}`,
+      message: matrixContextWarning ? `${matrixContextWarning}\n\n${action.command}` : `${row.name}\n\n${action.command}`,
       onConfirm: async () => {
         setModalConfig(null)
         startRunExecution(row.taxonomy, row.name, action.id)
@@ -948,14 +2526,33 @@ export default function App() {
             loadOperatorMatrix().then(setMatrixRows).catch(() => {}),
             loadRecentExecutions().then(setRecentExecutions).catch(() => {}),
           ])
-          if (selectedRun === row.name || targetRun === row.name) {
-            const [refreshedDetail, historyData] = await Promise.all([
-              loadRunDetail(row.taxonomy, row.name),
-              loadHistory(row.taxonomy, row.name),
-            ])
-            setDetail(refreshedDetail)
-            setTargetDetail(refreshedDetail)
-            setHistory(historyData)
+          const shouldRefreshParent = selectedRun === row.name
+          const shouldRefreshTarget = targetRun === row.name
+          if (shouldRefreshParent || shouldRefreshTarget) {
+            const refreshes: Promise<void>[] = []
+            if (shouldRefreshParent) {
+              refreshes.push(
+                loadRunDetail(row.taxonomy, row.name).then((refreshedDetail) => {
+                  setDetail(refreshedDetail)
+                  if ((targetRun ?? refreshedDetail.name) === refreshedDetail.name) {
+                    setTargetDetail(refreshedDetail)
+                  }
+                }),
+              )
+            }
+            if (shouldRefreshTarget) {
+              refreshes.push(
+                Promise.all([
+                  loadRunDetail(row.taxonomy, row.name),
+                  loadHistory(row.taxonomy, row.name),
+                ]).then(([refreshedTarget, historyData]) => {
+                  setTargetDetail(refreshedTarget)
+                  setHistory(historyData)
+                  setHistoryRun(row.name)
+                }),
+              )
+            }
+            await Promise.all(refreshes)
           }
         } catch (error) {
           setExecutionResult({
@@ -971,6 +2568,147 @@ export default function App() {
         }
       },
     })
+  }
+
+  const runAgentOSAction = async (
+    taxonomy: string,
+    runName: string,
+    payload: {
+      action_id: 'act' | 'capture-snapshot' | 'capture-checkpoint' | 'apply-snapshot' | 'apply-checkpoint'
+      snapshot_id?: string | null
+      checkpoint_id?: string | null
+      reason?: string
+      confirmed?: boolean
+    },
+  ) => {
+    startRunExecution(taxonomy, runName, payload.action_id)
+    setExecutionResult(null)
+    setAgentOSFeedback({
+      kind: 'running',
+      title: 'Action In Flight',
+      detail: `${payload.action_id} is running for ${runName}.`,
+      actionId: payload.action_id,
+    })
+    try {
+      const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/agent-os/actions/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = (await resp.json()) as ExecutionResult
+      if (!resp.ok) throw new Error('Failed to execute Agent OS action')
+      setExecutionResult(data)
+      if (data.status === 'FAILED') {
+        setAgentOSFeedback({
+          kind: data.exit_code === 1 && !data.stdout ? 'blocked' : 'failure',
+          title: data.exit_code === 1 && !data.stdout ? 'Action Blocked' : 'Action Failed',
+          detail: data.stderr || 'Agent OS action failed',
+          actionId: payload.action_id,
+        })
+      } else {
+        setAgentOSFeedback({
+          kind: 'success',
+          title: 'Action Succeeded',
+          detail: data.stdout || `${payload.action_id} completed successfully.`,
+          actionId: payload.action_id,
+        })
+      }
+      await Promise.all([
+        fetchRuns(),
+        loadOperatorMatrix().then(setMatrixRows).catch(() => {}),
+        loadRecentExecutions().then(setRecentExecutions).catch(() => {}),
+        refreshRunContexts(taxonomy, runName),
+        refreshAgentOS(taxonomy, runName),
+      ])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to execute Agent OS action'
+      setAgentOSFeedback({
+        kind: 'failure',
+        title: 'Action Failed',
+        detail: message,
+        actionId: payload.action_id,
+      })
+      setExecutionResult({
+        action_id: payload.action_id,
+        command: `agent-os:${payload.action_id}`,
+        status: 'FAILED',
+        exit_code: -1,
+        stdout: '',
+        stderr: message,
+      })
+    } finally {
+      finishRunExecution(taxonomy, runName)
+    }
+  }
+
+  const executeAgentOSAction = (
+    actionId: 'act' | 'capture-snapshot' | 'capture-checkpoint' | 'apply-snapshot' | 'apply-checkpoint',
+    taxonomy: string,
+    runName: string,
+  ) => {
+    if (actionId === 'apply-checkpoint') {
+      if (!selectedRecoveryCheckpointId) {
+        setAgentOSFeedback({
+          kind: 'blocked',
+          title: 'Action Blocked',
+          detail: 'Apply checkpoint is blocked: select a checkpoint candidate first.',
+          actionId,
+        })
+        return
+      }
+      setModalConfig({
+        title: 'Confirm Checkpoint Apply',
+        message: `Selected checkpoint: ${selectedRecoveryCheckpointId}\n\nThis will overwrite current execution state in run_state.json.`,
+        confirmLabel: 'Apply Checkpoint',
+        tone: 'danger',
+        inputLabel: 'Reason',
+        inputPlaceholder: 'Why is this checkpoint apply necessary?',
+        inputRequired: true,
+        onConfirm: async (inputValue) => {
+          setModalConfig(null)
+          await runAgentOSAction(taxonomy, runName, {
+            action_id: 'apply-checkpoint',
+            checkpoint_id: selectedRecoveryCheckpointId,
+            reason: inputValue?.trim() ?? '',
+            confirmed: true,
+          })
+        },
+      })
+      return
+    }
+
+    if (actionId === 'apply-snapshot') {
+      if (!selectedRecoverySnapshotId) {
+        setAgentOSFeedback({
+          kind: 'blocked',
+          title: 'Action Blocked',
+          detail: 'Apply snapshot is blocked: select a snapshot candidate first.',
+          actionId,
+        })
+        return
+      }
+      setModalConfig({
+        title: 'Confirm Snapshot Apply',
+        message: `Selected snapshot: ${selectedRecoverySnapshotId}\n\nThis will overwrite current file state for the snapshot target paths.`,
+        confirmLabel: 'Apply Snapshot',
+        tone: 'danger',
+        inputLabel: 'Reason',
+        inputPlaceholder: 'Why is this snapshot apply necessary?',
+        inputRequired: true,
+        onConfirm: async (inputValue) => {
+          setModalConfig(null)
+          await runAgentOSAction(taxonomy, runName, {
+            action_id: 'apply-snapshot',
+            snapshot_id: selectedRecoverySnapshotId,
+            reason: inputValue?.trim() ?? '',
+            confirmed: true,
+          })
+        },
+      })
+      return
+    }
+
+    void runAgentOSAction(taxonomy, runName, { action_id: actionId })
   }
 
   const invokeCodexPreset = async (
@@ -1001,10 +2739,34 @@ export default function App() {
     }
   }
 
-  const filteredRuns = runs.filter((run) => run.name.toLowerCase().includes(searchTerm.toLowerCase()))
+  const filteredRuns = runs.filter((run) => {
+    const matchesSearch = run.name.toLowerCase().includes(searchTerm.toLowerCase())
+    const matchesHumanBlocker = humanBlockerFilter === 'all' || Boolean(run.human_blocker_active)
+    return matchesSearch && matchesHumanBlocker
+  })
   const detailActions = targetDetail?.operator_actions ?? []
-  const executableActions = detailActions.filter((action) => action.execution_type !== 'human')
-  const humanActions = detailActions.filter((action) => action.execution_type === 'human')
+  const activeDetail = targetDetail ?? detail
+  const activeJudgeRecommendation = activeDetail?.judge_recommendation ?? null
+  const recommendedActionId = activeJudgeRecommendation?.suggested_action_id ?? null
+  const sortedDetailActions = [...detailActions].sort((a, b) => {
+    if (a.id === recommendedActionId) return -1
+    if (b.id === recommendedActionId) return 1
+    if (a.primary && !b.primary) return -1
+    if (!a.primary && b.primary) return 1
+    return 0
+  })
+  const executableActions = sortedDetailActions.filter((action) => action.execution_type !== 'human')
+  const humanActions = sortedDetailActions.filter((action) => action.execution_type === 'human')
+  const improveDecisionActionIds = ['phase-primary', 'rerun-plan', 'rerun-build', 'rerun-review']
+  const improveDecisionActions = activeDetailPhase === 'IMPROVE_NEEDED'
+    ? improveDecisionActionIds
+        .map((id) => sortedDetailActions.find((action) => action.id === id) ?? null)
+        .filter((action): action is OperatorAction => action !== null)
+    : []
+  const improveDecisionActionIdSet = new Set(improveDecisionActions.map((action) => action.id))
+  const regularExecutableActions = executableActions.filter((action) => !improveDecisionActionIdSet.has(action.id))
+  const regularHumanActions = humanActions.filter((action) => !improveDecisionActionIdSet.has(action.id))
+  const primaryExecutableAction = executableActions.find((action) => action.primary) ?? executableActions[0] ?? null
   const childRuns = detail?.children ?? []
   const matchingMatrixRows = matrixRows.filter((row) => row.name.toLowerCase().includes(searchTerm.toLowerCase()))
   const activePhases = new Set(['PLAN_NEEDED', 'BUILD_NEEDED', 'REVIEW_NEEDED', 'IMPROVE_NEEDED', 'RESULT_NEEDED'])
@@ -1017,8 +2779,16 @@ export default function App() {
     if (operatorFilter === 'recent') return recentRunNames.has(row.name)
     return activePhases.has(row.phase)
   }).slice(0, 10)
+  const showDetailedAssignmentCard = searchTerm.trim() === '__show_assignment_details__'
   const activeTargetName = targetDetail?.name ?? detail?.name ?? ''
   const activeChildName = detail && activeTargetName !== detail.name ? activeTargetName : null
+  const activeRunExecutionState =
+    selectedTaxonomy && activeTargetName ? executingStateForRun(selectedTaxonomy, activeTargetName) : null
+  const activeRunExecutionId = activeRunExecutionState?.actionId ?? null
+  const isPrimaryActionRunning = primaryExecutableAction !== null && activeRunExecutionId === primaryExecutableAction.id
+  const isActiveRunBusy = activeRunExecutionId !== null
+  const activeExecutionElapsed = activeRunExecutionState ? formatElapsedMs(executionNow - activeRunExecutionState.startedAt) : null
+  const failingGateResults = agentOSData?.gate_results?.filter((gate) => !gate.passed) ?? []
   const getCodexPresetsForPhase = (phase: string) =>
     (Object.entries(CODEX_PRESET_RULES) as Array<[CodexBridgeResult['preset_id'], (typeof CODEX_PRESET_RULES)[keyof typeof CODEX_PRESET_RULES]]>)
       .filter(([, rule]) => rule.allowedPhases.has(phase))
@@ -1034,7 +2804,42 @@ export default function App() {
     (targetDetail?.artifacts ?? detail?.artifacts ?? []).some((a) => a.name === 'review_review.md' && a.exists),
     (targetDetail?.artifacts ?? detail?.artifacts ?? []).some((a) => a.name === 'improve_review.md' && a.exists),
   ].filter(Boolean).length
-
+  const latestRunExecution =
+    history?.latest_execution
+      ? history.latest_execution
+      : selectedTaxonomy && targetRun
+        ? recentExecutions.find((job) =>
+            job.taxonomy === selectedTaxonomy &&
+            job.run_name === targetRun,
+          ) ?? null
+        : null
+  const agentOSActionIds = new Set([
+    'capture-snapshot',
+    'capture-checkpoint',
+    'apply-snapshot',
+    'apply-checkpoint',
+  ])
+  const recentAgentOSExecutions =
+    selectedTaxonomy && targetRun
+      ? recentExecutions.filter((job) =>
+          job.taxonomy === selectedTaxonomy &&
+          job.run_name === targetRun &&
+          agentOSActionIds.has(job.action_id),
+        ).slice(0, 5)
+      : []
+  const activePhase = activeDetail?.phase ?? ''
+  const activePriority = activeDetail?.priority ?? 'Unranked'
+  const activeNextRole = activeDetail?.next_role ?? ''
+  const activeOperatorCommand = activeDetail?.operator_command ?? ''
+  const activeDecisionReason = activeDetail?.decision_reason ?? ''
+  const activeAssignment = activeDetail?.assignment_summary ?? null
+  const activeSpecialist = activeDetail?.specialist_visibility ?? null
+  const suggestedJudgeAction =
+    activeJudgeRecommendation?.suggested_action_id
+      ? detailActions.find((action) => action.id === activeJudgeRecommendation.suggested_action_id) ?? null
+      : null
+  const suggestedJudgeComment =
+    activeJudgeRecommendation && suggestedJudgeAction ? buildJudgeAdvisoryComment(activeJudgeRecommendation) : ''
   useEffect(() => {
     if (!targetDetail || !selectedTaxonomy || !targetRun || selectedArtifact) return
 
@@ -1051,7 +2856,7 @@ export default function App() {
     }
 
     void fetchArtifact(preferred)
-  }, [targetDetail, selectedArtifact, selectedTaxonomy, targetRun])
+  }, [fetchArtifact, targetDetail, selectedArtifact, selectedTaxonomy, targetRun])
 
   const renderOperatorAction = (
     action: OperatorAction,
@@ -1063,6 +2868,7 @@ export default function App() {
     const isSaved = savedCommentByAction[action.id] === comment.trim() && comment.trim() !== ''
     const canExecute = action.execution_type !== 'human' && action.enabled && (!action.requires_comment || isSaved)
     const runningActionId = executingActionForRun(taxonomy, runName)
+    const runningState = executingStateForRun(taxonomy, runName)
     const isRunning = runningActionId === action.id
     const runBusy = runningActionId !== null
 
@@ -1079,6 +2885,11 @@ export default function App() {
               {mode === 'manual' && (
                 <span className="rounded border border-zinc-600 bg-zinc-800 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-zinc-300">
                   Manual
+                </span>
+              )}
+              {isRunning && (
+                <span className="rounded border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-100">
+                  Running {runningState ? formatElapsedMs(executionNow - runningState.startedAt) : ''}
                 </span>
               )}
             </div>
@@ -1132,7 +2943,7 @@ export default function App() {
                 : 'border-zinc-700 bg-zinc-950 text-zinc-200 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500'
           }`}
         >
-          {isRunning ? 'Running...' : action.execution_type === 'human' ? 'Human Guidance Only' : 'Execute'}
+          {isRunning ? 'Running...' : action.execution_type === 'human' ? 'Human Guidance Only' : action.label}
         </button>
       </div>
     )
@@ -1140,10 +2951,29 @@ export default function App() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-950 text-zinc-100">
+      {sidebarOpen && (
       <aside className="w-72 min-w-[18rem] shrink-0 border-r border-zinc-800 p-4 overflow-y-auto xl:w-80">
         <div className="mb-4 flex items-center gap-2">
           <Activity size={20} className="text-indigo-400" />
-          <h1 className="text-lg font-bold">APSF Viewer</h1>
+          <h1 className="flex-1 text-lg font-bold">APSF Viewer</h1>
+          <button
+            type="button"
+            onClick={() => setViewerConfigModalOpen(true)}
+            className="rounded border border-zinc-700 bg-zinc-900 p-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-white"
+            aria-label="Viewer Config"
+            title="Viewer Config"
+          >
+            <Settings size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(false)}
+            className="rounded border border-zinc-700 bg-zinc-900 p-1.5 text-zinc-300 hover:bg-zinc-800"
+            aria-label="Hide run list"
+            title="Hide run list"
+          >
+            <ChevronLeft size={16} />
+          </button>
         </div>
         <div className="relative mb-4">
           <Search size={16} className="absolute left-3 top-2.5 text-zinc-500" />
@@ -1153,6 +2983,22 @@ export default function App() {
             className="w-full rounded border border-zinc-800 bg-zinc-900 py-2 pl-9 pr-3 text-sm"
             placeholder="Search runs..."
           />
+        </div>
+        <div className="mb-4 flex flex-wrap gap-2">
+          {(['all', 'blocked'] as const).map((filter) => (
+            <button
+              key={filter}
+              type="button"
+              onClick={() => setHumanBlockerFilter(filter)}
+              className={`rounded border px-2.5 py-1 text-[10px] font-bold uppercase ${
+                humanBlockerFilter === filter
+                  ? 'border-amber-400 bg-amber-500/20 text-amber-100'
+                  : 'border-zinc-700 bg-zinc-900 text-zinc-400'
+              }`}
+            >
+              {filter === 'all' ? 'All Runs' : 'Human Blockers'}
+            </button>
+          ))}
         </div>
         <div className="space-y-2">
           {isLoadingRuns ? (
@@ -1190,16 +3036,34 @@ export default function App() {
                   <PriorityBadge priority={run.priority} />
                   <CountBadge count={run.child_count} />
                   <ReworkBadge count={[run.has_plan_review, run.has_build_review, run.has_review_review, run.has_improve_review].filter(Boolean).length} />
+                  {run.human_blocker_active && (
+                    <span className="rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
+                      HUMAN BLOCKER
+                    </span>
+                  )}
                 </div>
               </button>
             ))
           )}
         </div>
       </aside>
+      )}
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden 2xl:flex-row">
         {!detail ? (
-          <div className="flex flex-1 items-center justify-center text-zinc-500 font-medium">Select a run from the list to view details.</div>
+          <div className="flex flex-1 items-center justify-center text-zinc-500 font-medium">
+            {!sidebarOpen && (
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                className="absolute left-4 top-4 flex items-center gap-2 rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-bold text-zinc-200 hover:bg-zinc-800"
+              >
+                <ChevronRight size={16} />
+                Show Run List
+              </button>
+            )}
+            Select a run from the list to view details.
+          </div>
         ) : (
           <>
             <section
@@ -1209,6 +3073,17 @@ export default function App() {
               <div className={`sticky top-0 z-20 -mx-4 mb-4 border-b border-zinc-800 bg-zinc-950/95 px-4 backdrop-blur transition-all duration-300 ${headerCompact ? 'pb-2' : 'pb-4'}`}>
                 {/* Stable Core: Badges and Title */}
                 <div className="flex items-start justify-between gap-3">
+                  {!sidebarOpen && (
+                    <button
+                      type="button"
+                      onClick={() => setSidebarOpen(true)}
+                      className="mt-0.5 rounded border border-zinc-700 bg-zinc-900 p-1.5 text-zinc-300 hover:bg-zinc-800"
+                      aria-label="Show run list"
+                      title="Show run list"
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <PhaseBadge phase={targetDetail?.phase ?? detail.phase} />
@@ -1241,14 +3116,18 @@ export default function App() {
                   compact={headerCompact}
                 />
 
-                {/* Condensed Command View (Visible when compact) */}
-                <div className={`mt-1 flex items-center justify-between rounded border border-indigo-500/20 bg-indigo-500/5 px-2 py-1 transition-all duration-500 ${headerCompact ? 'opacity-100 max-h-10' : 'opacity-0 max-h-0 overflow-hidden mt-0 border-none'}`}>
-                   <div className="flex items-center gap-2 text-indigo-300 min-w-0">
-                     <Terminal size={12} />
-                     <span className="truncate font-mono text-[10px]">{targetDetail?.operator_command ?? ''}</span>
-                   </div>
-                   <CopyButton text={targetDetail?.operator_command ?? ''} />
-                </div>
+                {workspaceTab !== 'agent-os' && (
+                  <>
+                    {/* Condensed Command View (Visible when compact) */}
+                    <div className={`mt-1 flex items-center justify-between rounded border border-indigo-500/20 bg-indigo-500/5 px-2 py-1 transition-all duration-500 ${headerCompact ? 'opacity-100 max-h-10' : 'opacity-0 max-h-0 overflow-hidden mt-0 border-none'}`}>
+                       <div className="flex items-center gap-2 text-indigo-300 min-w-0">
+                         <Terminal size={12} />
+                         <span className="truncate font-mono text-[10px]">{targetDetail?.operator_command ?? ''}</span>
+                       </div>
+                       <CopyButton text={targetDetail?.operator_command ?? ''} />
+                    </div>
+                  </>
+                )}
 
                 {/* Collapsible Supplemental Section (Hidden when compact) */}
                 <div className={`overflow-hidden transition-all duration-500 ease-in-out ${headerCompact ? 'max-h-0 opacity-0 pointer-events-none' : 'max-h-[600px] opacity-100'}`}>
@@ -1269,49 +3148,36 @@ export default function App() {
                   })()}
                   <SatisfiabilityWarning reason={targetDetail?.decision_reason ?? detail.decision_reason} />
                   
-                  {/* Full Command View */}
-                  <div className="mt-3 rounded border border-indigo-500/30 bg-indigo-500/10 p-3">
-                    <div className="mb-2 flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-indigo-300">
-                        <Terminal size={14} />
-                        <span className="text-xs font-bold uppercase">
-                          Primary Command
-                          {targetDetail && (
-                            <span className="ml-2 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300">
-                              {targetDetail.name === detail.name ? 'PARENT' : targetDetail.name.split('/').slice(-1)[0]}
-                            </span>
-                          )}
-                        </span>
+                  {workspaceTab !== 'agent-os' && (
+                    <div className="mt-3 rounded border border-indigo-500/30 bg-indigo-500/10 p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-indigo-300">
+                          <Terminal size={14} />
+                          <span className="text-xs font-bold uppercase">
+                            Primary Command
+                            {targetDetail && (
+                              <span className="ml-2 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                                {targetDetail.name === detail.name ? 'PARENT' : targetDetail.name.split('/').slice(-1)[0]}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        <CopyButton text={targetDetail?.operator_command ?? ''} />
                       </div>
-                      <CopyButton text={targetDetail?.operator_command ?? ''} />
-                    </div>
-                    <div className="whitespace-pre-wrap break-words rounded bg-black/30 p-2 font-mono text-xs line-clamp-2">{targetDetail?.operator_command ?? ''}</div>
-                  </div>
-
-                  {targetTabs.length > 1 && (
-                    <div className="mt-4 space-y-2 pb-1">
-                      <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Current View</div>
-                      <div className="flex flex-wrap gap-2">
-                        {targetTabs.map((tab) => (
-                          <button
-                            key={tab.name}
-                            onClick={() => void fetchTargetDetail(detail.taxonomy, tab.name)}
-                            className={`rounded border px-3 py-1.5 text-xs font-bold ${
-                              targetRun === tab.name
-                                ? 'border-indigo-400 bg-indigo-500/20 text-indigo-100'
-                                : 'border-zinc-700 bg-zinc-900 text-zinc-300'
-                            }`}
-                          >
-                            {targetRun === tab.name ? `Viewing ${tab.label}` : `Open ${tab.label}`}
-                          </button>
-                        ))}
-                      </div>
+                      <div className="whitespace-pre-wrap break-words rounded bg-black/30 p-2 font-mono text-xs line-clamp-2">{targetDetail?.operator_command ?? ''}</div>
                     </div>
                   )}
+
                 </div>
 
                 {/* Fixed Tab Bar Region */}
-                <div className="mt-2 flex items-center gap-2 border-t border-zinc-800/70 pt-2">
+                <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800/70 pt-2">
+                  <button
+                    onClick={() => openAgentOSWorkspace(selectedTaxonomy, targetRun)}
+                    className={`rounded border px-3 py-1.5 text-xs font-bold transition-all duration-200 ${workspaceTab === 'agent-os' ? 'border-emerald-400 bg-emerald-500/20 text-emerald-100' : 'border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'}`}
+                  >
+                    Agent OS
+                  </button>
                   <button
                     onClick={() => setWorkspaceTab('detail')}
                     className={`rounded border px-3 py-1.5 text-xs font-bold transition-all duration-200 ${workspaceTab === 'detail' ? 'border-indigo-400 bg-indigo-500/20 text-indigo-100' : 'border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'}`}
@@ -1331,6 +3197,38 @@ export default function App() {
                     Activity
                   </button>
                 </div>
+
+                {targetTabs.length > 1 && (
+                  <div className="mt-3 space-y-2 border-t border-zinc-800/70 pt-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600">Current View</div>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentViewOpen((open) => !open)}
+                        className="rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-[10px] font-semibold text-zinc-400"
+                      >
+                        {currentViewOpen ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
+                    {currentViewOpen && (
+                      <div className="flex flex-wrap gap-2">
+                        {targetTabs.map((tab) => (
+                          <button
+                            key={tab.name}
+                            onClick={() => void fetchTargetDetail(detail.taxonomy, tab.name)}
+                            className={`rounded border px-3 py-1.5 text-xs font-bold ${
+                              targetRun === tab.name
+                                ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-200'
+                                : 'border-zinc-800 bg-zinc-900/60 text-zinc-400'
+                            }`}
+                          >
+                            {targetRun === tab.name ? `Viewing ${tab.label}` : `Open ${tab.label}`}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {workspaceTab === 'detail' ? (
@@ -1354,6 +3252,32 @@ export default function App() {
                         ) : null
                       })()}
                       <SatisfiabilityWarning reason={targetDetail?.decision_reason ?? detail.decision_reason} />
+                      {(targetDetail?.human_blocker?.active ?? detail.human_blocker?.active ?? false) && (
+                        <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/10 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-100">
+                              Human Blocker
+                            </span>
+                            {((targetDetail?.human_blocker?.source ?? detail.human_blocker?.source)) && (
+                              <span className="text-[10px] text-amber-200/80">
+                                source: {targetDetail?.human_blocker?.source ?? detail.human_blocker?.source}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-2 text-xs text-zinc-200">
+                            {targetDetail?.human_blocker?.summary ?? detail.human_blocker?.summary}
+                          </div>
+                          {((targetDetail?.human_blocker?.actions ?? detail.human_blocker?.actions ?? []).length > 0) && (
+                            <div className="mt-2 space-y-1">
+                              {(targetDetail?.human_blocker?.actions ?? detail.human_blocker?.actions ?? []).slice(0, 3).map((action, index) => (
+                                <div key={`${action}-${index}`} className="text-[11px] text-zinc-300">
+                                  {action}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
@@ -1394,6 +3318,9 @@ export default function App() {
                   {history && (history.latest_execution || history.latest_rerun_comment) && (
                     <div className="rounded border border-emerald-500/20 bg-emerald-500/5 p-4">
                       <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">Latest Persisted Activity</div>
+                      <div className="mb-3 text-[11px] text-zinc-400">
+                        Showing history for <span className="font-mono text-zinc-200">{historyRun ?? targetRun ?? detail.name}</span>
+                      </div>
                       <div className="grid gap-3 xl:grid-cols-2">
                         {history.latest_execution ? (
                           <div className="rounded border border-zinc-800 bg-black/20 p-3">
@@ -1403,6 +3330,12 @@ export default function App() {
                               <PhaseBadge phase={history.latest_execution.result_status} />
                             </div>
                             <div className="mt-2 text-xs text-zinc-400">{history.latest_execution.triggered_at}</div>
+                            {(history.latest_execution.result_status === 'PARTIAL' || history.latest_execution.result_status === 'FAILED') && history.latest_execution.stdout_summary && (
+                              <div className="mt-2 rounded border border-amber-500/20 bg-black/40 p-2">
+                                <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-amber-400/70">Last Output</div>
+                                <pre className="whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-zinc-300 line-clamp-4">{history.latest_execution.stdout_summary.split('\n').slice(-4).join('\n')}</pre>
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div className="rounded border border-zinc-800 bg-black/20 p-3 text-xs text-zinc-500">No execution history yet.</div>
@@ -1421,17 +3354,41 @@ export default function App() {
                     </div>
                   )}
 
-                  {executableActions.length > 0 && selectedTaxonomy && targetDetail && (
+                  {improveDecisionActions.length > 0 && selectedTaxonomy && targetDetail && (
                     <div className="space-y-3">
-                      <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Run Actions</div>
-                      {executableActions.map((action) => renderOperatorAction(action, 'executable', selectedTaxonomy, targetDetail.name))}
+                      <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Judge Decision Paths</div>
+                      <div className="rounded border border-fuchsia-500/20 bg-fuchsia-500/5 px-3 py-2 text-[11px] text-zinc-300">
+                        Accept, return to Plan, and return to Build stay visible here even when Judge Advisory recommends only one path.
+                      </div>
+                      {improveDecisionActions.map((action) =>
+                        renderOperatorAction(
+                          action,
+                          action.execution_type === 'human' ? 'manual' : 'executable',
+                          selectedTaxonomy,
+                          targetDetail.name,
+                        ),
+                      )}
                     </div>
                   )}
 
-                  {humanActions.length > 0 && selectedTaxonomy && targetDetail && (
+                  {regularExecutableActions.length > 0 && selectedTaxonomy && targetDetail && (
+                    <div className="space-y-3">
+                      <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">
+                        {recommendedActionId ? 'Recommended And More Actions' : 'More Actions'}
+                      </div>
+                      {recommendedActionId && (
+                        <div className="rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-[11px] text-zinc-300">
+                          Judge Advisory recommends the first action in this list.
+                        </div>
+                      )}
+                      {regularExecutableActions.map((action) => renderOperatorAction(action, 'executable', selectedTaxonomy, targetDetail.name))}
+                    </div>
+                  )}
+
+                  {regularHumanActions.length > 0 && selectedTaxonomy && targetDetail && (
                     <div className="space-y-3">
                       <div className="pt-2 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Run Manual Steps</div>
-                      {humanActions.map((action) => renderOperatorAction(action, 'manual', selectedTaxonomy, targetDetail.name))}
+                      {regularHumanActions.map((action) => renderOperatorAction(action, 'manual', selectedTaxonomy, targetDetail.name))}
                     </div>
                   )}
                 </div>
@@ -1440,9 +3397,9 @@ export default function App() {
                   <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
-                        <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Execution Matrix</div>
-                        <div className="mt-1 text-xs text-zinc-400">Operator shortcuts for top-level runs.</div>
-                      </div>
+              <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Execution Matrix</div>
+              <div className="mt-1 text-xs text-zinc-400">Operator shortcuts for top-level runs.</div>
+            </div>
                       <div className="flex items-center gap-2">
                         {(['active', 'recent', 'all'] as const).map((filter) => (
                           <button
@@ -1455,6 +3412,11 @@ export default function App() {
                         ))}
                       </div>
                     </div>
+                    {targetDetail && targetDetail.name !== detail.name && (
+                      <div className="mb-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                        Execution Matrix runs parent-level commands. Current child target: <span className="font-mono">{targetDetail.name}</span>. Use Run Detail actions for child runs.
+                      </div>
+                    )}
                     <div className="space-y-3">
                       {operatorRows.map((row) => (
                         <div key={row.name} className="rounded border border-zinc-800 bg-black/20 p-3">
@@ -1466,15 +3428,20 @@ export default function App() {
                             <div className="flex items-center gap-1">
                               <PhaseBadge phase={row.phase} />
                               <PriorityBadge priority={row.priority} />
+                              {selectedRun === row.name && (
+                                <span className="rounded border border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-bold text-indigo-200">
+                                  SELECTED PARENT
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div className="mb-3 flex items-center justify-between gap-3">
-                            <div className="text-xs text-zinc-500">Open the run for full detail, or operate directly from this card.</div>
+                            <div className="text-xs text-zinc-500">Open the parent run in Agent OS, or operate directly from this top-level card.</div>
                             <button
                               onClick={() => void fetchDetail(row.taxonomy, row.name)}
                               className="rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-[10px] font-bold text-zinc-200"
                             >
-                              Open Run Detail
+                              Open Parent
                             </button>
                           </div>
                           <div className="grid grid-cols-4 gap-2">
@@ -1557,6 +3524,1056 @@ export default function App() {
                     </div>
                   </div>
 
+                </div>
+              ) : workspaceTab === 'agent-os' ? (
+                <div className="space-y-4">
+                  {agentOSLoading && (
+                    <div className="flex items-center justify-center py-8 text-xs text-zinc-500">Loading Agent OS data…</div>
+                  )}
+                  {!agentOSLoading && !agentOSData && (
+                    <div className="rounded border border-dashed border-zinc-800 bg-zinc-900/20 p-6 text-center text-xs text-zinc-500">
+                      Select a run to view the default Agent OS workspace.
+                    </div>
+                  )}
+                  {!agentOSLoading && agentOSData && (
+                        <>
+                      {executionResult && (
+                        <div className={`rounded border p-4 ${
+                          executionResult.status === 'FAILED' && executionResult.exit_code === 1 && !executionResult.stdout
+                            ? 'border-yellow-500/40 bg-yellow-500/5'
+                            : executionResult.status === 'FAILED'
+                              ? 'border-red-500/40 bg-red-500/5'
+                              : executionResult.status === 'SUCCESS'
+                                ? 'border-emerald-500/30 bg-emerald-500/8'
+                                : 'border-zinc-800 bg-zinc-900/40'
+                        }`}>
+                          <div className="mb-2 flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-400">Latest Result</div>
+                              <div className="mt-1 text-xs text-zinc-300">{executionResult.action_id}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {hasExecutionLogContent(executionResult.stdout, executionResult.stderr) && (
+                                <CopyButton text={buildExecutionLogText(executionResult.stdout, executionResult.stderr)} />
+                              )}
+                              <PhaseBadge phase={executionResult.status} />
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-400">
+                            <span>Exit code: <span className={executionResult.exit_code !== 0 ? 'text-red-300' : 'text-zinc-200'}>{executionResult.exit_code}</span></span>
+                            <span className="truncate">Action: <span className="font-mono text-zinc-200">{executionResult.action_id}</span></span>
+                          </div>
+                          <div className="mt-2 rounded border border-zinc-800 bg-black/20 px-3 py-2 text-[11px] text-zinc-300">
+                            {executionResult.status === 'FAILED' && executionResult.exit_code === 1 && !executionResult.stdout
+                              ? 'Operation was blocked before execution.'
+                              : executionResult.status === 'FAILED'
+                                ? (executionResult.stderr || executionResult.stdout || 'Operation failed. Open the lower result panel for details.')
+                                : executionResult.status === 'SUCCESS'
+                                  ? (executionResult.stdout || executionResult.stderr || 'Operation completed successfully.')
+                                  : 'Execution finished.'}
+                          </div>
+                        </div>
+                      )}
+                      <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+                        <div className="rounded border border-emerald-500/20 bg-emerald-500/5 p-4">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <div>
+                              <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">Phase Context</div>
+                              <div className="mt-1 text-[10px] text-zinc-500">Default workspace for current truth.</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setViewerConfigModalOpen(true)}
+                                className="rounded border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-300 hover:border-zinc-500 hover:text-white"
+                              >
+                                Config
+                              </button>
+                              <PhaseBadge phase={activePhase} />
+                            </div>
+                          </div>
+                          <div className="space-y-2 text-xs">
+                            <div>
+                              <div className="text-[10px] uppercase tracking-wide text-zinc-500">Target</div>
+                              <div className="mt-0.5 break-words font-semibold text-zinc-100">{activeDetail?.name ?? detail.name}</div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <PriorityBadge priority={activePriority} />
+                              {agentOSData.run_state && (
+                                <span className="rounded border border-zinc-700 bg-black/20 px-2 py-0.5 text-[10px] font-semibold text-zinc-300">
+                                  {agentOSData.run_state.phase_status}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-zinc-400">Next: {activeNextRole || 'n/a'}</div>
+                            {agentOSData.run_state?.current_owner && (
+                              <div className="text-zinc-400">Owner: {agentOSData.run_state.current_owner}</div>
+                            )}
+                            {(() => {
+                              const parsed = parseSatisfiabilityReason(activeDecisionReason)
+                              return parsed.primary ? (
+                                <div className="line-clamp-2 text-[11px] text-zinc-500">{parsed.primary}</div>
+                              ) : null
+                            })()}
+                            {activeJudgeRecommendation && (
+                              <div className="rounded border border-fuchsia-500/25 bg-fuchsia-500/10 p-2.5">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <div>
+                                    <div className="text-[10px] uppercase tracking-wide text-fuchsia-200">Judge Advisory</div>
+                                    <div className="mt-0.5 text-[11px] font-semibold text-zinc-100">
+                                      {activeJudgeRecommendation.decision}
+                                      {activeJudgeRecommendation.suggested_action_label ? ` -> ${activeJudgeRecommendation.suggested_action_label}` : ''}
+                                    </div>
+                                  </div>
+                                  <span className="rounded border border-fuchsia-400/30 bg-fuchsia-500/10 px-2 py-0.5 text-[9px] font-bold uppercase text-fuchsia-100">
+                                    {activeJudgeRecommendation.confidence}
+                                  </span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-400">
+                                  <span>Critical: <span className="text-zinc-200">{activeJudgeRecommendation.critical_count}</span></span>
+                                  <span>Major: <span className="text-zinc-200">{activeJudgeRecommendation.major_count}</span></span>
+                                  <span>Minor: <span className="text-zinc-200">{activeJudgeRecommendation.minor_count}</span></span>
+                                  {activeJudgeRecommendation.suggested_return_phase && (
+                                    <span>Likely return: <span className="text-zinc-200">{activeJudgeRecommendation.suggested_return_phase}</span></span>
+                                  )}
+                                </div>
+                                {activeJudgeRecommendation.counts_note && (
+                                  <div className="mt-2 text-[10px] text-amber-200/90">
+                                    {activeJudgeRecommendation.counts_note}
+                                  </div>
+                                )}
+                                {activeJudgeRecommendation.review_verdict && (
+                                  <div className="mt-2 text-[11px] text-zinc-300">
+                                    Review verdict: <span className="text-zinc-100">{activeJudgeRecommendation.review_verdict}</span>
+                                  </div>
+                                )}
+                                {activeJudgeRecommendation.suggested_return_phase && (
+                                  <div className="mt-2 rounded border border-zinc-800/80 bg-black/20 p-2 text-[10px] text-zinc-400">
+                                    <div className="mb-1 uppercase tracking-wide text-zinc-500">Return Target Preview</div>
+                                    <div className="grid gap-1">
+                                      <div>
+                                        Role: <span className="text-zinc-100">{activeJudgeRecommendation.target_role || 'n/a'}</span>
+                                        {' / '}
+                                        Exec: <span className="text-zinc-100">{activeJudgeRecommendation.target_execution_type || 'n/a'}</span>
+                                      </div>
+                                      <div>
+                                        Provider: <span className="text-zinc-100">{activeJudgeRecommendation.target_provider || 'n/a'}</span>
+                                        {activeJudgeRecommendation.target_model ? (
+                                          <>
+                                            {' / '}
+                                            Model: <span className="font-mono text-zinc-100">{activeJudgeRecommendation.target_model}</span>
+                                          </>
+                                        ) : null}
+                                      </div>
+                                      <div>
+                                        Specialist: <span className="text-zinc-100">{activeJudgeRecommendation.target_specialist_code || 'n/a'}</span>
+                                        {activeJudgeRecommendation.target_specialist_mode ? (
+                                          <>
+                                            {' / '}
+                                            Mode: <span className="text-zinc-100">{activeJudgeRecommendation.target_specialist_mode}</span>
+                                          </>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                                {suggestedJudgeAction && selectedTaxonomy && activeTargetName && suggestedJudgeAction.comment_artifact && (
+                                  <div className="mt-2 rounded border border-fuchsia-500/20 bg-black/20 p-2.5">
+                                    <div className="mb-2 flex items-center justify-between gap-2">
+                                      <div>
+                                        <div className="text-[10px] uppercase tracking-wide text-fuchsia-200">Suggested Return Comment</div>
+                                        <div className="mt-0.5 text-[10px] text-zinc-500">
+                                          Saves to {suggestedJudgeAction.comment_artifact} for {suggestedJudgeAction.label}.
+                                        </div>
+                                      </div>
+                                      <CopyButton text={suggestedJudgeComment} />
+                                    </div>
+                                    <textarea
+                                      value={rerunComments[suggestedJudgeAction.id] ?? ''}
+                                      onChange={(e) => {
+                                        const next = e.target.value
+                                        setRerunComments((current) => ({ ...current, [suggestedJudgeAction.id]: next }))
+                                        if (savedCommentByAction[suggestedJudgeAction.id] && savedCommentByAction[suggestedJudgeAction.id] !== next.trim()) {
+                                          setSavedCommentByAction((current) => {
+                                            const copy = { ...current }
+                                            delete copy[suggestedJudgeAction.id]
+                                            return copy
+                                          })
+                                        }
+                                      }}
+                                      className="min-h-28 w-full rounded border border-zinc-700 bg-zinc-950 p-2 text-[11px] text-zinc-200"
+                                      placeholder={`Feedback to append to ${suggestedJudgeAction.comment_artifact}`}
+                                    />
+                                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                                      <div className="text-[10px] text-zinc-500">
+                                        {savedCommentByAction[suggestedJudgeAction.id] === (rerunComments[suggestedJudgeAction.id] ?? '').trim() && (rerunComments[suggestedJudgeAction.id] ?? '').trim() !== ''
+                                          ? 'Saved to artifact.'
+                                          : 'Save before running the return action.'}
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setRerunComments((current) => ({ ...current, [suggestedJudgeAction.id]: suggestedJudgeComment }))
+                                            if (savedCommentByAction[suggestedJudgeAction.id] && savedCommentByAction[suggestedJudgeAction.id] !== suggestedJudgeComment.trim()) {
+                                              setSavedCommentByAction((current) => {
+                                                const copy = { ...current }
+                                                delete copy[suggestedJudgeAction.id]
+                                                return copy
+                                              })
+                                            }
+                                          }}
+                                          className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-[10px] font-semibold text-zinc-200 hover:bg-zinc-800"
+                                        >
+                                          Use Advisory Text
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => void saveRerunComment(suggestedJudgeAction, selectedTaxonomy, activeTargetName)}
+                                          disabled={savingActionId !== null || ((rerunComments[suggestedJudgeAction.id] ?? '').trim() === '') || savedCommentByAction[suggestedJudgeAction.id] === (rerunComments[suggestedJudgeAction.id] ?? '').trim()}
+                                          className="rounded border border-fuchsia-500/30 bg-fuchsia-500/15 px-3 py-1.5 text-[10px] font-semibold text-fuchsia-100 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+                                        >
+                                          {savingActionId === suggestedJudgeAction.id ? 'Saving...' : 'Save Comment'}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                                <div className="mt-2 text-[11px] text-zinc-400">{activeJudgeRecommendation.rationale}</div>
+                                <div className="mt-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (judgeChatMessages.length === 0) {
+                                        setJudgeChatMessages([{
+                                          role: 'assistant',
+                                          content: 'レビューを読みました。何から始めましょうか？Critical や Major の問題を一つずつ整理してお手伝いします。',
+                                        }])
+                                      }
+                                      setJudgeChatOpen(true)
+                                    }}
+                                    className="rounded border border-fuchsia-500/40 bg-fuchsia-500/10 px-3 py-1.5 text-[11px] font-semibold text-fuchsia-200 hover:bg-fuchsia-500/20"
+                                  >
+                                    AI と相談する
+                                  </button>
+                                </div>
+                                {activeJudgeRecommendation.human_owned_blocker && (
+                                  <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-100">
+                                    Human-owned blocker: {activeJudgeRecommendation.human_blocker_summary ?? 'Manual confirmation is required before Builder can make progress.'}
+                                  </div>
+                                )}
+                                <div className="mt-2 text-[10px] text-zinc-500">
+                                  Advisory only. Judge still decides, records the decision in improve.md, reflects the findings, and then returns the run to Planner or Builder when needed.
+                                </div>
+                              </div>
+                            )}
+                            {activeRunExecutionState && (
+                              <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div>
+                                    <div className="text-[10px] uppercase tracking-wide text-amber-200">Running Now</div>
+                                    <div className="mt-0.5 text-[11px] font-semibold text-zinc-100">{activeRunExecutionState.actionId}</div>
+                                  </div>
+                                  <span className="rounded border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase text-amber-100">
+                                    {activeExecutionElapsed ? activeExecutionElapsed : 'Running'}
+                                  </span>
+                                </div>
+                                <div className="mt-2 text-[11px] text-zinc-400">
+                                  Agent OS is executing this run. The latest result panel will update after completion.
+                                </div>
+                              </div>
+                            )}
+                            {primaryExecutableAction && selectedTaxonomy && activeTargetName ? (
+                              <div className="rounded border border-emerald-500/25 bg-black/20 p-2.5">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <div>
+                                    <div className="text-[10px] uppercase tracking-wide text-emerald-300">Next Step</div>
+                                    <div className="mt-0.5 text-[11px] font-semibold text-zinc-100">{primaryExecutableAction.label}</div>
+                                  </div>
+                                  <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase text-emerald-100">
+                                    Recommended
+                                  </span>
+                                </div>
+                                <div className="mb-2 text-[11px] text-zinc-400">{primaryExecutableAction.description}</div>
+                                <button
+                                  type="button"
+                                  onClick={() => void executeAction(primaryExecutableAction, selectedTaxonomy, activeTargetName)}
+                                  disabled={!primaryExecutableAction.enabled || isActiveRunBusy}
+                                  className="w-full rounded border border-emerald-500/30 bg-emerald-500/15 px-3 py-2 text-[11px] font-bold text-emerald-50 transition-colors hover:bg-emerald-500/20 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+                                >
+                                  {isPrimaryActionRunning ? 'Running...' : primaryExecutableAction.label}
+                                </button>
+                                {activeOperatorCommand && (
+                                  <div className="mt-2 rounded border border-zinc-800 bg-zinc-950/50 p-2">
+                                    <div className="mb-1 flex items-start justify-between gap-2 text-[10px] text-zinc-500">
+                                      <span>Recommended Command</span>
+                                      <CopyButton text={activeOperatorCommand} />
+                                    </div>
+                                    <div className="line-clamp-2 whitespace-pre-wrap break-words font-mono text-[10px] text-zinc-300">{activeOperatorCommand}</div>
+                                  </div>
+                                )}
+                              </div>
+                            ) : activeOperatorCommand && (
+                              <div className="rounded border border-zinc-800 bg-black/20 p-2">
+                                <div className="mb-1 flex items-start justify-between gap-2 text-[10px] text-zinc-500">
+                                  <span>Recommended Command</span>
+                                  <CopyButton text={activeOperatorCommand} />
+                                </div>
+                                <div className="line-clamp-3 whitespace-pre-wrap break-words font-mono text-[10px] text-zinc-300">{activeOperatorCommand}</div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <div>
+                              <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-400">Assignment</div>
+                              <div className="mt-1 text-[10px] text-zinc-500">Phase, provider, specialist in one pass.</div>
+                            </div>
+                            {activeAssignment && <AssignmentModeBadge mode={activeAssignment.execution.mode} />}
+                          </div>
+                          {activeAssignment && activeSpecialist ? (
+                            <div className="space-y-2 text-xs">
+                              <div className="rounded border border-zinc-800 bg-black/20 p-2">
+                                <div className="text-[10px] uppercase tracking-wide text-zinc-500">Agent</div>
+                                <div className="mt-0.5 font-semibold text-zinc-100">{activeAssignment.role || 'unset'}</div>
+                                <div className="mt-1 text-zinc-400">{activeAssignment.execution.execution_type || 'unset'}</div>
+                              </div>
+                              <div className="rounded border border-zinc-800 bg-black/20 p-2">
+                                <div className="text-[10px] uppercase tracking-wide text-zinc-500">Provider / Model</div>
+                                <div className="mt-0.5 text-zinc-200">{activeAssignment.model.provider || 'unset'}</div>
+                                <div className="font-mono text-[10px] text-zinc-400">{activeAssignment.model.model || 'unset'}</div>
+                              </div>
+                              <div className={`rounded border bg-black/20 p-2 ${activeSpecialist.has_gap ? 'border-red-500/30' : 'border-zinc-800'}`}>
+                                <div className="text-[10px] uppercase tracking-wide text-zinc-500">Specialist</div>
+                                <div className="mt-0.5 font-semibold text-zinc-100">{activeSpecialist.specialist_code || '(generic)'}</div>
+                                <div className={activeSpecialist.has_gap ? 'text-red-300' : 'text-zinc-400'}>
+                                  {activeSpecialist.has_gap ? 'Gap detected' : 'No gap'}
+                                </div>
+                              </div>
+                              {specialistCandidates && selectedTaxonomy && targetRun && (
+                                <div className="space-y-2 rounded border border-amber-500/20 bg-amber-500/5 p-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => void openSpecialistSelectionModal(activeSpecialist.specialist_code || specialistCandidates.current_code || '')}
+                                    disabled={isActiveRunBusy}
+                                    className="w-full rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/20 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+                                  >
+                                    {activePhase === 'IMPROVE_NEEDED' ? `Select Return ${specialistCandidates.role} Specialist` : 'Select Specialist'}
+                                  </button>
+                                  {detail && targetRun !== detail.name && (
+                                    <div className="rounded border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-[10px] text-indigo-100">
+                                      Targeting child run: <span className="font-mono">{targetRun}</span>
+                                    </div>
+                                  )}
+                                  <div className="text-[10px] text-zinc-500">
+                                    {activePhase === 'IMPROVE_NEEDED'
+                                      ? `Inspect and update the ${specialistCandidates.role} specialist that will be used after the Judge returns this run to ${specialistCandidates.phase}.`
+                                      : 'Inspect the current library, assign an existing specialist, use generic explicitly, or create a new specialist asset.'}
+                                  </div>
+                                  {isActiveRunBusy && (
+                                    <div className="rounded border border-yellow-500/20 bg-yellow-500/5 px-3 py-2 text-[10px] text-yellow-100">
+                                      Specialist changes are blocked while this run is executing.
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-zinc-500">Assignment summary unavailable.</div>
+                          )}
+                        </div>
+
+                        <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <div>
+                              <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-400">Last Action</div>
+                              <div className="mt-1 text-[10px] text-zinc-500">Latest Agent OS operator event.</div>
+                            </div>
+                            {latestRunExecution && <PhaseBadge phase={latestRunExecution.result_status} />}
+                          </div>
+                          {latestRunExecution ? (
+                            <div className="space-y-2 text-xs text-zinc-400">
+                              <div>
+                                <div className="text-[10px] uppercase tracking-wide text-zinc-500">What Ran</div>
+                                <div className="mt-0.5 font-semibold text-zinc-200">
+                                  {summarizeExecutionIntent(
+                                    latestRunExecution.action_id,
+                                    latestRunExecution.command,
+                                    latestRunExecution.action_type,
+                                  )}
+                                </div>
+                                <div className="mt-1 font-mono text-[10px] text-zinc-500">
+                                  {prettifyActionId(latestRunExecution.action_id)}
+                                </div>
+                              </div>
+                              <div>{latestRunExecution.triggered_at.slice(0, 19).replace('T', ' ')} UTC</div>
+                              <div className="rounded border border-zinc-800 bg-black/20 p-2">
+                                <div className="mb-1 flex items-start justify-between gap-2 text-[10px] text-zinc-500">
+                                  <span>Command</span>
+                                  <CopyButton text={latestRunExecution.command} />
+                                </div>
+                                <div className="line-clamp-3 break-words font-mono text-[10px] text-zinc-300">{latestRunExecution.command}</div>
+                              </div>
+                              <div>
+                                <div className="text-[10px] uppercase tracking-wide text-zinc-500">Outcome Summary</div>
+                                <div className="mt-1 line-clamp-3 text-[11px] text-zinc-400">
+                                  {summarizeExecutionOutcome(latestRunExecution.stdout_summary, latestRunExecution.stderr_summary)}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-xs text-zinc-500">No Agent OS operator execution captured yet.</div>
+                          )}
+                        </div>
+
+                      </div>
+                      {showDetailedAssignmentCard && (() => {
+                        const assignmentDetail = targetDetail ?? detail
+                        if (!assignmentDetail) return null
+                        const assignment = assignmentDetail.assignment_summary
+                        const specialist = assignmentDetail.specialist_visibility
+                        return (
+                          <div className="rounded border border-emerald-500/20 bg-emerald-500/5 p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">Assignment</div>
+                                <div className="mt-1 text-[10px] text-zinc-500">Current phase selection for agent, provider/model, and specialist.</div>
+                              </div>
+                              <PhaseBadge phase={assignmentDetail.phase} />
+                            </div>
+                            <div className="grid gap-3 lg:grid-cols-3">
+                              <div className="rounded border border-zinc-800 bg-black/20 p-3 text-xs">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Agent</div>
+                                  <AssignmentModeBadge mode={assignment.execution.mode} />
+                                </div>
+                                <div className="text-[11px] text-zinc-500 uppercase tracking-wide">Role</div>
+                                <div className="mt-0.5 font-semibold text-zinc-100">{assignment.role || '—'}</div>
+                                <div className="mt-2 text-[11px] text-zinc-500 uppercase tracking-wide">Execution</div>
+                                <div className="mt-0.5 text-zinc-200">{assignment.execution.execution_type}</div>
+                                <div className="mt-2 text-[11px] text-zinc-500 uppercase tracking-wide">Target</div>
+                                <div className="mt-0.5 font-mono text-[11px] text-zinc-200">{assignment.execution.target || '—'}</div>
+                                {assignment.execution.workspace && (
+                                  <>
+                                    <div className="mt-2 text-[11px] text-zinc-500 uppercase tracking-wide">Workspace</div>
+                                    <div className="mt-0.5 font-mono text-[11px] text-zinc-400">{assignment.execution.workspace}</div>
+                                  </>
+                                )}
+                                <div className="mt-2 text-[10px] text-zinc-500">{assignment.execution.reason}</div>
+                              </div>
+
+                              <div className="rounded border border-zinc-800 bg-black/20 p-3 text-xs">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Provider</div>
+                                  <AssignmentModeBadge mode={assignment.model.mode} />
+                                </div>
+                                <div className="text-[11px] text-zinc-500 uppercase tracking-wide">Provider</div>
+                                <div className="mt-0.5 font-semibold text-zinc-100">{assignment.model.provider || '—'}</div>
+                                <div className="mt-2 text-[11px] text-zinc-500 uppercase tracking-wide">Model</div>
+                                <div className="mt-0.5 font-mono text-[11px] text-zinc-200">{assignment.model.model || '—'}</div>
+                                <div className="mt-2 text-[10px] text-zinc-500">{assignment.model.reason}</div>
+                              </div>
+
+                              <div className={`rounded border bg-black/20 p-3 text-xs ${specialist.has_gap ? 'border-red-500/30' : 'border-zinc-800'}`}>
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Specialist</div>
+                                  <AssignmentModeBadge mode={specialist.mode} />
+                                </div>
+                                <div className="text-[11px] text-zinc-500 uppercase tracking-wide">Code</div>
+                                <div className="mt-0.5 font-semibold text-zinc-100">{specialist.specialist_code || '(generic)'}</div>
+                                <div className="mt-2 text-[11px] text-zinc-500 uppercase tracking-wide">Gap</div>
+                                <div className={`mt-0.5 font-semibold ${specialist.has_gap ? 'text-red-300' : 'text-zinc-300'}`}>{specialist.has_gap ? 'Yes' : 'No'}</div>
+                                <div className="mt-2 text-[10px] text-zinc-500">{specialist.reason}</div>
+                                {specialistCandidates && selectedTaxonomy && targetRun && (
+                                  <div className="mt-3 space-y-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => void openSpecialistSelectionModal(specialist.specialist_code || specialistCandidates.current_code || '')}
+                                      className="w-full rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/20"
+                                    >
+                                      Select Specialist
+                                    </button>
+                                    {detail && targetRun !== detail.name && (
+                                      <div className="rounded border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-[10px] text-indigo-100">
+                                        Targeting child run: <span className="font-mono">{targetRun}</span>
+                                      </div>
+                                    )}
+                                    <div className="text-[10px] text-zinc-500">
+                                      Inspect the current library, assign an existing specialist, use generic explicitly, or branch into new specialist authoring.
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })()}
+
+                      {/* Legacy run banner — shown when no Agent OS v1 artifacts exist at all */}
+                      {!agentOSData.run_state && agentOSData.gate_results.length === 0 && !agentOSData.artifact_manifest && (
+                        <div className="rounded border border-dashed border-zinc-700 bg-zinc-900/30 p-5 text-center">
+                          <div className="text-xs font-semibold text-zinc-400">Agent OS state not initialized</div>
+                          <div className="mt-1 text-[11px] text-zinc-600">This run pre-dates the state-first workflow, or <code className="font-mono">apsf act</code> has not been called yet.</div>
+                          <div className="mt-2 text-[10px] text-zinc-700">Expected: <code className="font-mono">run_state.json</code> / <code className="font-mono">artifact_manifest.json</code></div>
+                        </div>
+                      )}
+
+                      {/* Run State */}
+                      {agentOSData.run_state ? (
+                        <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
+                          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Run State</div>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                            <div>
+                              <div className="text-[10px] text-zinc-600 uppercase tracking-wide">Phase</div>
+                              <div className="mt-0.5 font-semibold text-zinc-100">{agentOSData.run_state.current_phase}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-zinc-600 uppercase tracking-wide">Status</div>
+                              <div className={`mt-0.5 font-semibold ${agentOSData.run_state.phase_status === 'failed' ? 'text-red-300' : agentOSData.run_state.phase_status === 'in_progress' ? 'text-amber-300' : 'text-emerald-300'}`}>
+                                {agentOSData.run_state.phase_status}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-zinc-600 uppercase tracking-wide">Owner</div>
+                              <div className="mt-0.5 text-zinc-200">{agentOSData.run_state.current_owner || '—'}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-zinc-600 uppercase tracking-wide">Retry Count</div>
+                              <div className={`mt-0.5 ${agentOSData.run_state.retry_count > 0 ? 'text-amber-300' : 'text-zinc-400'}`}>
+                                {agentOSData.run_state.retry_count}
+                              </div>
+                            </div>
+                            {agentOSData.run_state.active_handoff_id && (
+                              <div className="col-span-2">
+                                <div className="text-[10px] text-zinc-600 uppercase tracking-wide">Active Handoff</div>
+                                <div className="mt-0.5 font-mono text-[10px] text-zinc-400">{agentOSData.run_state.active_handoff_id}</div>
+                              </div>
+                            )}
+                            {agentOSData.run_state.last_error && (
+                              <div className="col-span-2">
+                                <div className="text-[10px] text-zinc-600 uppercase tracking-wide">Last Error</div>
+                                <div className="mt-0.5 rounded bg-red-950/30 px-2 py-1 font-mono text-[10px] text-red-300">{agentOSData.run_state.last_error}</div>
+                              </div>
+                            )}
+                            {agentOSData.run_state.gate_failures.length > 0 && (
+                              <div className="col-span-2">
+                                <div className="text-[10px] text-zinc-600 uppercase tracking-wide">Gate Failures</div>
+                                <div className="mt-1 space-y-1">
+                                  {agentOSData.run_state.gate_failures.map((f, i) => (
+                                    <div key={i} className="rounded bg-red-950/20 px-2 py-1 text-[10px] text-red-300">{f}</div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : agentOSData.gate_results.length > 0 || agentOSData.artifact_manifest ? (
+                        <div className="rounded border border-dashed border-zinc-800 p-3 text-center text-[11px] text-zinc-600">run_state.json not yet created</div>
+                      ) : null}
+
+                      {/* Gate Results: show only when something failed */}
+                      {failingGateResults.length > 0 && (
+                        <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
+                          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Gate Results</div>
+                          <div className="space-y-2">
+                            {failingGateResults.map((g, i) => (
+                              <div key={i} className="flex items-start gap-3 rounded border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs">
+                                <div className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-red-400" />
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-red-200">{g.gate_type}</div>
+                                  {g.reason && <div className="mt-0.5 text-[10px] text-zinc-400">{g.reason}</div>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Artifact Manifest */}
+                      {agentOSData.artifact_manifest && agentOSData.artifact_manifest.length > 0 && (
+                        <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
+                          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Artifact Manifest</div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-[10px]">
+                              <thead>
+                                <tr className="border-b border-zinc-800 text-left text-zinc-600">
+                                  <th className="pb-1.5 pr-3 font-semibold uppercase tracking-wide">Artifact</th>
+                                  <th className="pb-1.5 pr-3 font-semibold uppercase tracking-wide">Written By</th>
+                                  <th className="pb-1.5 pr-3 font-semibold uppercase tracking-wide">Status</th>
+                                  <th className="pb-1.5 pr-3 font-semibold uppercase tracking-wide">Rev</th>
+                                  <th className="pb-1.5 font-semibold uppercase tracking-wide">Updated</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-zinc-800/50">
+                                {agentOSData.artifact_manifest.map((e) => (
+                                  <tr key={e.artifact_name} className="text-zinc-300">
+                                    <td className="py-1.5 pr-3 font-mono font-semibold text-zinc-100">{e.artifact_name}</td>
+                                    <td className="py-1.5 pr-3 text-zinc-400">{e.written_by || '—'}</td>
+                                    <td className="py-1.5 pr-3">
+                                      <span className={`rounded px-1.5 py-0.5 font-semibold ${e.status === 'generated' ? 'bg-blue-500/15 text-blue-300' : 'bg-zinc-700/50 text-zinc-400'}`}>
+                                        {e.status}
+                                      </span>
+                                    </td>
+                                    <td className="py-1.5 pr-3 text-zinc-500">r{e.revision}</td>
+                                    <td className="py-1.5 font-mono text-zinc-500">{e.updated_at.slice(0, 16).replace('T', ' ')}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Force Audit (optional) */}
+                      {agentOSData.force_audit && agentOSData.force_audit.length > 0 && (
+                        <div className="rounded border border-amber-500/20 bg-amber-500/5 p-4">
+                          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em] text-amber-400">Force Audit</div>
+                          <div className="space-y-2">
+                            {agentOSData.force_audit.map((e, i) => (
+                              <div key={i} className="rounded border border-amber-500/15 bg-black/20 px-3 py-2 text-[10px]">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-semibold text-amber-200">{e.override_kind}</span>
+                                  <span className="text-zinc-500">|</span>
+                                  <span className="font-mono text-zinc-300">{e.target_file}</span>
+                                  <span className="text-zinc-500">|</span>
+                                  <span className="text-zinc-400">{e.command}</span>
+                                  {!e.had_reason && (
+                                    <span className="rounded bg-red-500/20 px-1.5 py-0.5 font-bold text-red-300">no reason</span>
+                                  )}
+                                </div>
+                                {e.reason && <div className="mt-1 text-zinc-400">Reason: {e.reason}</div>}
+                                <div className="mt-1 font-mono text-zinc-600">{e.timestamp.slice(0, 19).replace('T', ' ')} UTC</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Recovery (read-only) */}
+                      <div className="rounded border border-cyan-500/20 bg-cyan-500/5 p-4">
+                        <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.2em] text-cyan-300">Recovery</div>
+                        <div className="mb-4 text-[10px] text-zinc-500">
+                          Historical recovery candidates are shown below current truth. Selection is read-only and does not trigger restore.
+                        </div>
+
+                        <div className="grid gap-4 xl:grid-cols-3">
+                          <div className="rounded border border-zinc-800 bg-black/20 p-3">
+                            <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-400">Execution Checkpoints</div>
+                            {agentOSData.recovery_checkpoints.length > 0 ? (
+                              <div className="space-y-2">
+                                <div className="space-y-1">
+                                  {agentOSData.recovery_checkpoints.map((checkpoint) => {
+                                    const selected = selectedRecoveryCheckpointId === checkpoint.checkpoint_id
+                                    return (
+                                      <button
+                                        key={checkpoint.checkpoint_id}
+                                        type="button"
+                                        onClick={() => setSelectedRecoveryCheckpointId(checkpoint.checkpoint_id)}
+                                        className={`w-full rounded border px-3 py-2 text-left text-[10px] transition-colors ${
+                                          selected
+                                            ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-100'
+                                            : 'border-zinc-800 bg-zinc-950/40 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-900/50'
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between gap-3">
+                                          <span className="font-mono font-semibold">{checkpoint.checkpoint_id}</span>
+                                          {selected && <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[9px] font-bold text-cyan-300">Selected Candidate</span>}
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-zinc-500">
+                                          <span>Phase: {checkpoint.phase || '—'}</span>
+                                          <span>Status: {checkpoint.phase_status || '—'}</span>
+                                          <span>{formatAgentOSTimestamp(checkpoint.created_at)}</span>
+                                        </div>
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                                {(() => {
+                                  const selectedCheckpoint =
+                                    agentOSData.recovery_checkpoints.find((item) => item.checkpoint_id === selectedRecoveryCheckpointId) ?? null
+                                  if (!selectedCheckpoint) {
+                                    return (
+                                      <div className="rounded border border-dashed border-zinc-800 p-3 text-center text-[10px] text-zinc-600">
+                                        Select a checkpoint to inspect metadata.
+                                      </div>
+                                    )
+                                  }
+                                  return (
+                                    <div className="rounded border border-cyan-500/15 bg-cyan-500/5 p-3 text-[10px]">
+                                      <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-300">Inspect</div>
+                                      <div className="grid gap-2">
+                                        <div><span className="text-zinc-500">Checkpoint ID:</span> <span className="font-mono text-zinc-200">{selectedCheckpoint.checkpoint_id}</span></div>
+                                        <div><span className="text-zinc-500">Phase:</span> <span className="text-zinc-200">{selectedCheckpoint.phase || '—'}</span></div>
+                                        <div><span className="text-zinc-500">Phase Status:</span> <span className="text-zinc-200">{selectedCheckpoint.phase_status || '—'}</span></div>
+                                        <div><span className="text-zinc-500">Created:</span> <span className="text-zinc-200">{formatAgentOSTimestamp(selectedCheckpoint.created_at)}</span></div>
+                                        <div><span className="text-zinc-500">Related Event:</span> <span className="font-mono text-zinc-300">{selectedCheckpoint.related_event_id || '—'}</span></div>
+                                        <div><span className="text-zinc-500">Summary:</span> <span className="text-zinc-300">{selectedCheckpoint.summary || 'No summary recorded.'}</span></div>
+                                      </div>
+                                    </div>
+                                  )
+                                })()}
+                              </div>
+                            ) : (
+                              <div className="rounded border border-dashed border-zinc-800 p-3 text-center text-[10px] text-zinc-600">
+                                No execution checkpoints recorded yet.
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="rounded border border-zinc-800 bg-black/20 p-3">
+                            <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-400">File Snapshots</div>
+                            {agentOSData.recovery_snapshots.length > 0 ? (
+                              <div className="space-y-2">
+                                <div className="space-y-1">
+                                  {agentOSData.recovery_snapshots.map((snapshot) => {
+                                    const selected = selectedRecoverySnapshotId === snapshot.snapshot_id
+                                    return (
+                                      <button
+                                        key={snapshot.snapshot_id}
+                                        type="button"
+                                        onClick={() => setSelectedRecoverySnapshotId(snapshot.snapshot_id)}
+                                        className={`w-full rounded border px-3 py-2 text-left text-[10px] transition-colors ${
+                                          selected
+                                            ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-100'
+                                            : 'border-zinc-800 bg-zinc-950/40 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-900/50'
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between gap-3">
+                                          <span className="font-mono font-semibold">{snapshot.snapshot_id}</span>
+                                          {selected && <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[9px] font-bold text-cyan-300">Selected Candidate</span>}
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-zinc-500">
+                                          <span>Phase: {snapshot.source_phase || '—'}</span>
+                                          <span>Files: {snapshot.file_count}</span>
+                                          <span>{formatAgentOSTimestamp(snapshot.captured_at)}</span>
+                                        </div>
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                                {(() => {
+                                  const selectedSnapshot =
+                                    agentOSData.recovery_snapshots.find((item) => item.snapshot_id === selectedRecoverySnapshotId) ?? null
+                                  if (!selectedSnapshot) {
+                                    return (
+                                      <div className="rounded border border-dashed border-zinc-800 p-3 text-center text-[10px] text-zinc-600">
+                                        Select a snapshot to inspect metadata.
+                                      </div>
+                                    )
+                                  }
+                                  return (
+                                    <div className="rounded border border-cyan-500/15 bg-cyan-500/5 p-3 text-[10px]">
+                                      <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-300">Inspect</div>
+                                      <div className="grid gap-2">
+                                        <div><span className="text-zinc-500">Snapshot ID:</span> <span className="font-mono text-zinc-200">{selectedSnapshot.snapshot_id}</span></div>
+                                        <div><span className="text-zinc-500">Source Phase:</span> <span className="text-zinc-200">{selectedSnapshot.source_phase || '—'}</span></div>
+                                        <div><span className="text-zinc-500">Captured:</span> <span className="text-zinc-200">{formatAgentOSTimestamp(selectedSnapshot.captured_at)}</span></div>
+                                        <div><span className="text-zinc-500">File Count:</span> <span className="text-zinc-200">{selectedSnapshot.file_count}</span></div>
+                                        <div>
+                                          <div className="text-zinc-500">Target Paths</div>
+                                          <div className="mt-1 space-y-1">
+                                            {selectedSnapshot.target_paths.length > 0 ? selectedSnapshot.target_paths.slice(0, 5).map((path) => (
+                                              <div key={path} className="rounded bg-black/20 px-2 py-1 font-mono text-[9px] text-zinc-300">{path}</div>
+                                            )) : <div className="text-zinc-600">No target paths recorded.</div>}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )
+                                })()}
+                              </div>
+                            ) : (
+                              <div className="rounded border border-dashed border-zinc-800 p-3 text-center text-[10px] text-zinc-600">
+                                No file snapshots recorded yet.
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="rounded border border-zinc-800 bg-black/20 p-3">
+                            <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-400">Apply Trace</div>
+                            {agentOSData.recovery_apply_traces.length > 0 ? (
+                              <div className="space-y-2">
+                                <div className="space-y-1">
+                                  {agentOSData.recovery_apply_traces.map((trace) => {
+                                    const selected = selectedRecoveryApplyTraceId === trace.event_id
+                                    const statusClasses =
+                                      trace.status === 'success'
+                                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                                        : 'border-rose-500/30 bg-rose-500/10 text-rose-200'
+                                    return (
+                                      <button
+                                        key={trace.event_id}
+                                        type="button"
+                                        onClick={() => setSelectedRecoveryApplyTraceId(trace.event_id)}
+                                        className={`w-full rounded border px-3 py-2 text-left text-[10px] transition-colors ${
+                                          selected
+                                            ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-100'
+                                            : 'border-zinc-800 bg-zinc-950/40 text-zinc-300 hover:border-zinc-700 hover:bg-zinc-900/50'
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between gap-3">
+                                          <span className="font-mono font-semibold">{trace.target_kind}:{trace.target_id}</span>
+                                          <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${statusClasses}`}>
+                                            {trace.status}
+                                          </span>
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-zinc-500">
+                                          <span>{trace.event_type}</span>
+                                          <span>{formatAgentOSTimestamp(trace.timestamp)}</span>
+                                        </div>
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                                {(() => {
+                                  const selectedTrace =
+                                    agentOSData.recovery_apply_traces.find((item) => item.event_id === selectedRecoveryApplyTraceId) ?? null
+                                  if (!selectedTrace) {
+                                    return (
+                                      <div className="rounded border border-dashed border-zinc-800 p-3 text-center text-[10px] text-zinc-600">
+                                        Select an apply trace to inspect outcome metadata.
+                                      </div>
+                                    )
+                                  }
+                                  return (
+                                    <div className="rounded border border-cyan-500/15 bg-cyan-500/5 p-3 text-[10px]">
+                                      <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-300">Inspect</div>
+                                      <div className="grid gap-2">
+                                        <div><span className="text-zinc-500">Target:</span> <span className="font-mono text-zinc-200">{selectedTrace.target_kind}:{selectedTrace.target_id}</span></div>
+                                        <div><span className="text-zinc-500">Status:</span> <span className="text-zinc-200">{selectedTrace.status}</span></div>
+                                        <div><span className="text-zinc-500">Event Type:</span> <span className="font-mono text-zinc-300">{selectedTrace.event_type}</span></div>
+                                        <div><span className="text-zinc-500">Timestamp:</span> <span className="text-zinc-200">{formatAgentOSTimestamp(selectedTrace.timestamp)}</span></div>
+                                        <div><span className="text-zinc-500">Reason:</span> <span className="text-zinc-300">{selectedTrace.reason || 'No reason recorded.'}</span></div>
+                                        <div><span className="text-zinc-500">Outcome:</span> <span className="text-zinc-300">{selectedTrace.outcome_summary || 'No outcome summary recorded.'}</span></div>
+                                      </div>
+                                    </div>
+                                  )
+                                })()}
+                              </div>
+                            ) : (
+                              <div className="rounded border border-dashed border-zinc-800 p-3 text-center text-[10px] text-zinc-600">
+                                No apply trace recorded yet.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {selectedTaxonomy && targetRun && (
+                        <div className="rounded border border-fuchsia-500/20 bg-fuchsia-500/5 p-4">
+                          <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.2em] text-fuchsia-300">Operator Actions</div>
+                          <div className="mb-4 text-[10px] text-zinc-500">
+                            Minimal GUI operator surface. Apply actions require a selected recovery candidate, an explicit reason, and confirmation.
+                          </div>
+
+                          {agentOSFeedback && (
+                            <div
+                              className={`mb-4 rounded border px-3 py-2 text-xs ${
+                                agentOSFeedback.kind === 'running'
+                                  ? 'border-amber-500/30 bg-amber-500/10 text-amber-100'
+                                  : agentOSFeedback.kind === 'success'
+                                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+                                    : agentOSFeedback.kind === 'blocked'
+                                      ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-100'
+                                      : 'border-red-500/30 bg-red-500/10 text-red-200'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="font-semibold uppercase tracking-wide">{agentOSFeedback.title}</div>
+                                {agentOSFeedback.actionId && (
+                                  <div className="font-mono text-[10px] opacity-80">{agentOSFeedback.actionId}</div>
+                                )}
+                              </div>
+                              <div className="mt-1 whitespace-pre-wrap text-[11px] opacity-90">{agentOSFeedback.detail}</div>
+                            </div>
+                          )}
+
+                          <div className="mb-4 grid gap-3 xl:grid-cols-5">
+                            {[
+                              {
+                                id: 'capture-snapshot' as const,
+                                label: 'Capture Snapshot',
+                                description: 'Capture existing canonical artifacts as a recovery snapshot.',
+                                blockedReason: '',
+                              },
+                              {
+                                id: 'capture-checkpoint' as const,
+                                label: 'Capture Checkpoint',
+                                description: 'Capture current execution state into recovery/checkpoints/.',
+                                blockedReason: '',
+                              },
+                              {
+                                id: 'apply-snapshot' as const,
+                                label: 'Apply Snapshot',
+                                description: selectedRecoverySnapshotId
+                                  ? `Strong action. Selected snapshot: ${selectedRecoverySnapshotId}`
+                                  : 'Strong action. Select a snapshot candidate first.',
+                                blockedReason: selectedRecoverySnapshotId ? '' : 'Blocked until a snapshot candidate is selected.',
+                              },
+                              {
+                                id: 'apply-checkpoint' as const,
+                                label: 'Apply Checkpoint',
+                                description: selectedRecoveryCheckpointId
+                                  ? `Strong action. Selected checkpoint: ${selectedRecoveryCheckpointId}`
+                                  : 'Strong action. Select a checkpoint candidate first.',
+                                blockedReason: selectedRecoveryCheckpointId ? '' : 'Blocked until a checkpoint candidate is selected.',
+                              },
+                            ].map((action) => {
+                              const runningActionId = executingActionForRun(selectedTaxonomy, targetRun)
+                              const isRunning = runningActionId === action.id
+                              const runBusy = runningActionId !== null
+                              const isStrongAction = action.id === 'apply-snapshot' || action.id === 'apply-checkpoint'
+                              const isBlocked = Boolean(action.blockedReason)
+                              const toneClass = isStrongAction
+                                ? 'border-red-500/25 bg-red-500/5'
+                                : 'border-zinc-800 bg-zinc-900/30'
+                              return (
+                                <div key={action.id} className={`rounded border p-3 ${toneClass}`}>
+                                  <div className="mb-2 flex items-center justify-between gap-2">
+                                    <div className="text-sm font-semibold text-zinc-100">{action.label}</div>
+                                    <div className="flex items-center gap-1.5">
+                                      {isStrongAction && (
+                                        <span className="rounded border border-red-400/30 bg-red-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-red-200">
+                                          Strong
+                                        </span>
+                                      )}
+                                      {isRunning ? (
+                                        <span className="rounded border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-100">
+                                          Running
+                                        </span>
+                                      ) : isBlocked ? (
+                                        <span className="rounded border border-yellow-400/30 bg-yellow-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-yellow-100">
+                                          Blocked
+                                        </span>
+                                      ) : (
+                                        <span className="rounded border border-emerald-400/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-100">
+                                          Ready
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="mb-3 min-h-12 text-[11px] text-zinc-400">{action.description}</div>
+                                  {isBlocked && (
+                                    <div className="mb-3 rounded border border-yellow-500/20 bg-yellow-500/5 px-2 py-1 text-[10px] text-yellow-100">
+                                      {action.blockedReason}
+                                    </div>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => executeAgentOSAction(action.id, selectedTaxonomy, targetRun)}
+                                    disabled={runBusy}
+                                    className={`w-full rounded border px-3 py-2 text-xs font-bold transition-colors disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-600 ${
+                                      isStrongAction
+                                        ? 'border-red-500/30 bg-red-500/15 text-red-100 hover:bg-red-500/20'
+                                        : 'border-fuchsia-400/30 bg-fuchsia-500/15 text-fuchsia-100 hover:bg-fuchsia-500/20'
+                                    }`}
+                                  >
+                                    {isRunning ? 'Running...' : action.label}
+                                  </button>
+                                </div>
+                              )
+                            })}
+                          </div>
+
+                          <div className="grid gap-3 xl:grid-cols-3">
+                            <div className="rounded border border-zinc-800 bg-black/20 p-3 text-[10px]">
+                              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Current Selection</div>
+                              <div className="space-y-1 text-zinc-400">
+                                <div>Checkpoint: <span className="font-mono text-zinc-200">{selectedRecoveryCheckpointId || '(none)'}</span></div>
+                                <div>Snapshot: <span className="font-mono text-zinc-200">{selectedRecoverySnapshotId || '(none)'}</span></div>
+                              </div>
+                            </div>
+                            <div className="rounded border border-zinc-800 bg-black/20 p-3 text-[10px]">
+                              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Latest Summary</div>
+                              {latestRunExecution ? (
+                                <div className="space-y-2 text-zinc-400">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-mono text-zinc-200">{latestRunExecution.action_id}</span>
+                                    <PhaseBadge phase={latestRunExecution.result_status} />
+                                  </div>
+                                  <div>{latestRunExecution.triggered_at.slice(0, 19).replace('T', ' ')} UTC</div>
+                                  <div className="rounded bg-black/30 px-2 py-1 font-mono text-[9px] text-zinc-300">
+                                    <div className="mb-1 flex items-start justify-between gap-2">
+                                      <span className="text-zinc-500">Command</span>
+                                      <CopyButton text={latestRunExecution.command} />
+                                    </div>
+                                    <div>{latestRunExecution.command}</div>
+                                  </div>
+                                  {latestRunExecution.stdout_summary && (
+                                    <div className="rounded border border-zinc-800/60 bg-zinc-950/40 px-2 py-1 text-[9px] text-zinc-300">
+                                      <div className="mb-1 flex items-start justify-between gap-2">
+                                        <span className="text-zinc-500">Stdout</span>
+                                        <CopyButton text={latestRunExecution.stdout_summary} />
+                                      </div>
+                                      {latestRunExecution.stdout_summary}
+                                    </div>
+                                  )}
+                                  {latestRunExecution.stderr_summary && (
+                                    <div className="rounded border border-red-500/20 bg-red-950/20 px-2 py-1 text-[9px] text-red-200">
+                                      <div className="mb-1 flex items-start justify-between gap-2">
+                                        <span className="text-red-300/80">Stderr</span>
+                                        <CopyButton text={latestRunExecution.stderr_summary} />
+                                      </div>
+                                      {latestRunExecution.stderr_summary}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="text-zinc-500">No execution captured yet.</div>
+                              )}
+                            </div>
+                            <div className="rounded border border-zinc-800 bg-black/20 p-3 text-[10px]">
+                              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Recent History</div>
+                              {recentAgentOSExecutions.length > 0 ? (
+                                <div className="space-y-2">
+                                  {recentAgentOSExecutions.map((job) => {
+                                    const tone =
+                                      job.result_status === 'SUCCESS'
+                                        ? 'border-emerald-500/20 bg-emerald-500/5'
+                                        : job.result_status === 'FAILED' && (job.exit_code ?? 0) === 1 && !(job.stdout_summary ?? '').trim()
+                                          ? 'border-yellow-500/20 bg-yellow-500/5'
+                                          : job.result_status === 'FAILED'
+                                            ? 'border-red-500/20 bg-red-500/5'
+                                            : job.result_status === 'PENDING'
+                                              ? 'border-amber-500/20 bg-amber-500/5'
+                                              : 'border-zinc-800 bg-zinc-950/30'
+                                    return (
+                                      <div key={job.id} className={`rounded border px-2 py-2 ${tone}`}>
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="font-mono text-zinc-200">{job.action_id}</span>
+                                          <PhaseBadge phase={job.result_status} />
+                                        </div>
+                                        <div className="mt-1 text-zinc-500">{job.triggered_at.slice(0, 19).replace('T', ' ')} UTC</div>
+                                        <div className="mt-1 rounded bg-black/20 px-2 py-1 font-mono text-[9px] text-zinc-300">
+                                          {job.command}
+                                        </div>
+                                        {(job.stdout_summary || job.stderr_summary) && (
+                                          <div className="mt-1 text-[9px] text-zinc-400">
+                                            {(job.stderr_summary || job.stdout_summary || '').split('\n')[0]}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              ) : (
+                                <div className="text-zinc-500">No recent Agent OS operator history yet.</div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="mt-3 rounded border border-zinc-800 bg-black/20 p-3 text-[10px] text-zinc-400">
+                            <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Safety Boundary</div>
+                            <div>`act` and capture actions are low-risk button actions.</div>
+                            <div className="mt-1">`apply snapshot` and `apply checkpoint` stay blocked until a candidate is selected, then require reason and confirmation in the modal.</div>
+                            <div className="mt-1">History is read-only and mirrors the latest few Agent OS operator executions already stored in the viewer log.</div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -1655,10 +4672,26 @@ export default function App() {
                   </div>
 
                   {executionResult && (
-                    <div className={`rounded border ${executionResult.status === 'FAILED' ? 'border-red-500/50 bg-red-500/5' : 'border-zinc-800 bg-zinc-900/40'} p-3 animate-in fade-in slide-in-from-bottom-2`}>
+                    <div className={`rounded border ${
+                      executionResult.status === 'FAILED' && executionResult.exit_code === 1 && !executionResult.stdout
+                        ? 'border-yellow-500/40 bg-yellow-500/5'
+                        : executionResult.status === 'FAILED'
+                          ? 'border-red-500/50 bg-red-500/5'
+                          : 'border-zinc-800 bg-zinc-900/40'
+                    } p-3 animate-in fade-in slide-in-from-bottom-2`}>
                       <div className="mb-2 flex items-center justify-between">
-                        <div className={`text-xs font-bold ${executionResult.status === 'FAILED' ? 'text-red-400' : 'text-zinc-300'}`}>
-                          {executionResult.status === 'FAILED' ? 'ERROR: ' : ''}Execution Result
+                        <div className={`text-xs font-bold ${
+                          executionResult.status === 'FAILED' && executionResult.exit_code === 1 && !executionResult.stdout
+                            ? 'text-yellow-300'
+                            : executionResult.status === 'FAILED'
+                              ? 'text-red-400'
+                              : 'text-zinc-300'
+                        }`}>
+                          {executionResult.status === 'FAILED' && executionResult.exit_code === 1 && !executionResult.stdout
+                            ? 'BLOCKED: '
+                            : executionResult.status === 'FAILED'
+                              ? 'ERROR: '
+                              : ''}Execution Result
                         </div>
                         <div className="flex items-center gap-2">
                           {hasExecutionLogContent(executionResult.stdout, executionResult.stderr) && (
@@ -1673,11 +4706,19 @@ export default function App() {
                         <span className="opacity-70">exit code:</span> <span className={executionResult.exit_code !== 0 ? 'text-red-400' : ''}>{executionResult.exit_code}</span>
                       </div>
                       
-                      {executionResult.status === 'FAILED' && (
+                      {executionResult.status === 'FAILED' && executionResult.exit_code === 1 && !executionResult.stdout ? (
+                        <div className="mb-2 rounded bg-yellow-500/20 px-2 py-1 text-[10px] font-bold text-yellow-100">
+                          Operation was blocked before execution. Check the reason below.
+                        </div>
+                      ) : executionResult.status === 'FAILED' ? (
                         <div className="mb-2 rounded bg-red-500/20 px-2 py-1 text-[10px] font-bold text-red-200">
                           Operation failed. Check the logs below for details.
                         </div>
-                      )}
+                      ) : executionResult.status === 'SUCCESS' ? (
+                        <div className="mb-2 rounded bg-emerald-500/15 px-2 py-1 text-[10px] font-bold text-emerald-100">
+                          Operation completed successfully.
+                        </div>
+                      ) : null}
 
                       <div className="space-y-2">
                         {executionResult.stdout && (
@@ -1815,7 +4856,132 @@ export default function App() {
         )}
       </main>
 
-      {modalConfig && <ConfirmModal config={modalConfig} onCancel={() => setModalConfig(null)} />}
+      {judgeChatOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="flex h-[75vh] w-full max-w-2xl flex-col rounded-lg border border-fuchsia-500/30 bg-zinc-950 shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-fuchsia-300">Judge AI Assistant</div>
+                <div className="text-[13px] font-semibold text-zinc-100">{activeTargetName}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setJudgeChatOpen(false)}
+                className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+              >
+                ✕
+              </button>
+            </div>
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {judgeChatMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] rounded-lg px-3 py-2 text-[12px] leading-relaxed ${
+                    msg.role === 'user'
+                      ? 'bg-fuchsia-500/20 text-fuchsia-100'
+                      : 'bg-zinc-800 text-zinc-200'
+                  }`}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+              {judgeChatLoading && (
+                <div className="flex justify-start">
+                  <div className="rounded-lg bg-zinc-800 px-3 py-2 text-[12px] text-zinc-400">考え中...</div>
+                </div>
+              )}
+            </div>
+            {/* Save last AI message as comment */}
+            {judgeChatMessages.length > 0 && judgeChatMessages[judgeChatMessages.length - 1].role === 'assistant' && suggestedJudgeAction && (
+              <div className="border-t border-zinc-800 px-4 py-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const lastAI = judgeChatMessages[judgeChatMessages.length - 1].content
+                    setRerunComments((c) => ({ ...c, [suggestedJudgeAction.id]: lastAI }))
+                    setJudgeChatOpen(false)
+                  }}
+                  className="text-[11px] text-fuchsia-300 underline hover:text-fuchsia-100"
+                >
+                  最後の AI メッセージをコメント欄に貼り付ける
+                </button>
+              </div>
+            )}
+            {/* Input */}
+            <div className="border-t border-zinc-800 p-3 flex gap-2">
+              <textarea
+                className="flex-1 resize-none rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-[12px] text-zinc-100 placeholder-zinc-500 focus:border-fuchsia-500/50 focus:outline-none"
+                rows={2}
+                placeholder="Judge として決定・質問を入力..."
+                value={judgeChatInput}
+                onChange={(e) => setJudgeChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void sendJudgeChatMessage()
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => void sendJudgeChatMessage()}
+                disabled={judgeChatLoading || !judgeChatInput.trim()}
+                className="rounded border border-fuchsia-500/30 bg-fuchsia-500/15 px-4 text-[12px] font-semibold text-fuchsia-200 disabled:opacity-40 hover:bg-fuchsia-500/25"
+              >
+                送信
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {modalConfig && (
+        <ConfirmModal
+          key={`${modalConfig.title}-${modalConfig.inputDefaultValue ?? ''}-${modalConfig.message}`}
+          config={modalConfig}
+          onCancel={() => setModalConfig(null)}
+        />
+      )}
+      {viewerConfigModalOpen && (
+        <ViewerConfigModal
+          config={viewerConfig}
+          savingKey={viewerConfigSavingKey}
+          onClose={() => setViewerConfigModalOpen(false)}
+          onUpdate={updateViewerConfig}
+        />
+      )}
+      {specialistModalOpen && specialistCandidates && selectedTaxonomy && targetRun && (
+        <SpecialistSelectionModal
+          taxonomy={selectedTaxonomy}
+          runName={targetRun}
+          candidatesData={specialistCandidates}
+          initialCode={specialistModalSelectedCode}
+          createResult={createdSpecialistResult}
+          onClose={() => {
+            setCreatedSpecialistResult(null)
+            setSpecialistModalOpen(false)
+          }}
+          onConfirm={handleConfirmSpecialist}
+          onCreateNew={(suggestedCode) => {
+            setSpecialistModalSelectedCode(suggestedCode ?? '')
+            setSpecialistModalOpen(false)
+            setCreateSpecialistModalOpen(true)
+          }}
+        />
+      )}
+      {createSpecialistModalOpen && specialistCandidates && selectedTaxonomy && targetRun && (
+        <CreateSpecialistModal
+          taxonomy={selectedTaxonomy}
+          runName={targetRun}
+          role={specialistCandidates.role as 'Planner' | 'Builder' | 'Critic'}
+          suggestedCode={specialistModalSelectedCode}
+          onClose={() => {
+            setCreateSpecialistModalOpen(false)
+            setSpecialistModalOpen(true)
+          }}
+          onCreated={handleCreatedSpecialist}
+        />
+      )}
       {selectedExecutionLog && <ExecutionLogModal job={selectedExecutionLog} onClose={() => setSelectedExecutionLog(null)} />}
     </div>
   )

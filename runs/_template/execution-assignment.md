@@ -73,3 +73,9 @@
 - Primary C-TYPE:
 - Specialist Path:
 - Selection Basis:
+
+### Builder Specialist
+
+- Primary B-TYPE:
+- Specialist Path:
+- Selection Basis:

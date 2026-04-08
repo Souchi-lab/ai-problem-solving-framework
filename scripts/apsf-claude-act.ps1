@@ -63,8 +63,61 @@ function Resolve-RunFilePath {
     )
 
     $runsRoot = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
+    $normalizedRun = $TargetRun -replace '/', '\'
+    $segments = $normalizedRun.Split('\', [System.StringSplitOptions]::RemoveEmptyEntries)
+
+    if ($segments.Length -eq 3 -and @("work", "fw-improvement") -contains $segments[0]) {
+        $candidate = Join-Path $runsRoot $normalizedRun
+        $path = Join-Path $candidate $TargetFile
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            return $path
+        }
+    }
+
+    if ($segments.Length -eq 2) {
+        $direct = Join-Path $runsRoot $normalizedRun
+        $directFile = Join-Path $direct $TargetFile
+        if (Test-Path -LiteralPath $directFile -PathType Leaf) {
+            return $directFile
+        }
+
+        foreach ($taxonomy in @("fw-improvement", "work")) {
+            $candidate = Join-Path (Join-Path $runsRoot $taxonomy) $normalizedRun
+            $path = Join-Path $candidate $TargetFile
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+                return $path
+            }
+        }
+    }
+
+    if ($segments.Length -eq 1) {
+        foreach ($taxonomy in @("fw-improvement", "work")) {
+            $candidate = Join-Path (Join-Path $runsRoot $taxonomy) $segments[0]
+            $path = Join-Path $candidate $TargetFile
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+                return $path
+            }
+        }
+
+        if ($segments[0] -match '^\d{3}c\d+_[a-z0-9-]+_.+$') {
+            foreach ($taxonomy in @("fw-improvement", "work")) {
+                $taxonomyDir = Join-Path $runsRoot $taxonomy
+                if (-not (Test-Path -LiteralPath $taxonomyDir -PathType Container)) {
+                    continue
+                }
+                $match = Get-ChildItem -LiteralPath $taxonomyDir -Directory -ErrorAction SilentlyContinue |
+                    ForEach-Object { Join-Path (Join-Path $_.FullName $segments[0]) $TargetFile } |
+                    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                    Select-Object -First 1
+                if ($null -ne $match) {
+                    return $match
+                }
+            }
+        }
+    }
+
     $match = Get-ChildItem -Path $runsRoot -Recurse -File -Filter $TargetFile -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -like "*\$TargetRun\$TargetFile" } |
+        Where-Object { $_.FullName -like "*\$normalizedRun\$TargetFile" } |
         Select-Object -First 1
 
     if ($null -ne $match) {
@@ -130,6 +183,24 @@ function Get-Specialist {
         if ($inRoleSection -and $line -match "(?i)Primary\s+[A-Z]-TYPE:\s*(.+)") {
             $specialistSubtype = $matches[1].Trim()
             break
+        }
+    }
+
+    # Parse Confirmed Specialist section if still unknown
+    if ($specialistSubtype -eq "" -or $specialistSubtype -eq "Unknown") {
+        $inConfirmSection = $false
+        foreach ($line in $lines) {
+            if ($line -match "^##\s*Confirmed\s+Specialist") {
+                $inConfirmSection = $true
+                continue
+            }
+            if ($inConfirmSection -and $line -match "^##\s+") {
+                $inConfirmSection = $false
+            }
+            if ($inConfirmSection -and $line -match "(?i)[A-Z]-TYPE\s*:\s*([^\|\s\.]+)") {
+                $specialistSubtype = $matches[1].Trim()
+                break
+            }
         }
     }
 
@@ -602,11 +673,13 @@ if ($isHuman) {
 }
 
 if ($phase -eq "BUILD_NEEDED") {
-    Write-Host "[Stop] BUILD_NEEDED is not supported via apsf-claude-act.ps1." -ForegroundColor Yellow
-    Write-Host "       The wrapper runs claude -p with tools disabled, but Builder now expects real file edits." -ForegroundColor DarkGray
-    Write-Host "       Use a tool-enabled builder path instead:" -ForegroundColor DarkGray
-    Write-Host "         1. Ask Codex / Claude Code directly in the workspace" -ForegroundColor DarkGray
-    Write-Host "         2. Or run: apsf build $Run" -ForegroundColor DarkGray
+    Write-Host "[Stop] BUILD_NEEDED does not use 'act'." -ForegroundColor Yellow
+    Write-Host "       Builder needs real file edits, so this phase must go through a tool-enabled build path." -ForegroundColor DarkGray
+    Write-Host "       Run one of these instead:" -ForegroundColor DarkGray
+    Write-Host "         1. .\\scripts\\apsf-wrapper-build.ps1 $Run -Backend claude-cli" -ForegroundColor DarkGray
+    Write-Host "         2. .\\scripts\\apsf-wrapper-build.ps1 $Run -Backend codex-cli" -ForegroundColor DarkGray
+    Write-Host "         3. apsf build $Run" -ForegroundColor DarkGray
+    Write-Host "       act wrapper scope: PLAN_NEEDED and REVIEW_NEEDED only" -ForegroundColor DarkGray
     Write-Host "       check: apsf next $Run" -ForegroundColor DarkGray
     exit 1
 }

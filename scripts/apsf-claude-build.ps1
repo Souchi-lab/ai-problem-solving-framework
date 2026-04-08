@@ -10,7 +10,9 @@
     create real project files.
 
     Contract:
-      - Builder writes files DIRECTLY to disk. build.md is an optional log.
+      - Builder writes files DIRECTLY to disk.
+      - Builder MUST also write the canonical build record to build.md.
+      - Do not write only build_rerun_*.md or other timestamped substitutes.
       - This script does NOT capture stdout and save a Markdown artifact.
       - build_review.md (if present) is prepended to the assembled prompt.
 
@@ -74,37 +76,184 @@ if (-not (Get-Command "claude" -ErrorAction SilentlyContinue)) {
 
 # ── Resolve run directory ─────────────────────────────────────────────────
 
-$runsRoot = Join-Path (Split-Path $PSScriptRoot -Parent) "runs"
-$runDir = Get-ChildItem -Path $runsRoot -Recurse -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -eq $Run } |
-    Select-Object -First 1
+$projectRoot = Split-Path $PSScriptRoot -Parent
+$runsRoot = Join-Path $projectRoot "runs"
+$resolvedRunPath = @"
+import sys
+from pathlib import Path
+from apsf.legacy.storage.run_repository import RunRepository
 
-if ($null -eq $runDir) {
+sys.stdout.reconfigure(encoding="utf-8")
+
+project_root = Path(r"$projectRoot")
+repo = RunRepository(
+    runs_dir=project_root / "runs",
+    template_dir=project_root / "runs" / "_template",
+)
+run_name = r"$Run"
+parts = [part for part in run_name.split("/") if part]
+if len(parts) == 3 and parts[0] in {"work", "fw-improvement"}:
+    print(repo.get_child_run_dir(parts[1], parts[2], taxonomy=parts[0]))
+elif len(parts) == 2 and parts[0] in {"work", "fw-improvement"}:
+    print(repo.get_run_dir(parts[1], taxonomy=parts[0]))
+elif len(parts) == 2:
+    parent, child = parts
+    direct = project_root / "runs" / parent / child
+    if direct.is_dir():
+        print(direct)
+    else:
+        for taxonomy in ("fw-improvement", "work"):
+            candidate = project_root / "runs" / taxonomy / parent / child
+            if candidate.is_dir():
+                print(candidate)
+                break
+        else:
+            print(repo.get_child_run_dir(parent, child))
+else:
+    print(repo.get_run_dir(run_name))
+"@ | python -
+
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($resolvedRunPath)) {
     Write-Host "[Error] Run not found: $Run" -ForegroundColor Red
     Write-Host "  Searched under: $runsRoot" -ForegroundColor DarkGray
     exit 1
 }
 
-$runPath = $runDir.FullName
+$runPath = $resolvedRunPath.Trim()
+if (-not (Test-Path -LiteralPath $runPath -PathType Container)) {
+    Write-Host "[Error] Run not found: $Run" -ForegroundColor Red
+    Write-Host "  Resolved path does not exist: $runPath" -ForegroundColor DarkGray
+    exit 1
+}
 Write-Host "[APSF] run:       $Run" -ForegroundColor Cyan
 Write-Host "[APSF] run path:  $runPath" -ForegroundColor Cyan
 Write-Host "[APSF] mode:      BUILD (tool-enabled)" -ForegroundColor Cyan
 
 # ── Phase guard ──────────────────────────────────────────────────────────
 
-$currentPhase = (apsf next $Run --phase-only).Trim()
+$currentPhase = @"
+from pathlib import Path
+import sqlite3
+from apsf.core.manifest.manifest_repository import ManifestRepository
+from apsf.core.state.run_state import PhaseStatus, RunState
+from apsf.core.state.run_state_repository import RunStateRepository
+from apsf.legacy.orchestration.phase_detector import PhaseDetector
+from apsf.legacy.orchestration.act_service import _phase_to_owner
+
+project_root = Path(r"$projectRoot")
+run_dir = Path(r"$runPath")
+run_name = r"$Run"
+
+state_repo = RunStateRepository(run_dir)
+state = state_repo.load()
+phase = state.current_phase if state is not None and state.current_phase else PhaseDetector(run_dir).detect().phase.value
+
+conn = None
+try:
+    conn = sqlite3.connect(str(project_root / "viewer.db"))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT result_status, command, stdout_summary FROM action_executions WHERE run_name = ? ORDER BY id DESC LIMIT 5",
+        (run_name,),
+    ).fetchall()
+    for row in rows:
+        result_status = str(row["result_status"] or "").strip().upper()
+        command = str(row["command"] or "").strip().lower()
+        stdout_summary = str(row["stdout_summary"] or "").strip()
+        if "apsf-wrapper-build.ps1" not in command:
+            continue
+        if result_status in ("PARTIAL", "FAILED") and "not BUILD_NEEDED" in stdout_summary:
+            continue
+        if result_status == "PARTIAL" and phase != "BUILD_NEEDED":
+            phase = "BUILD_NEEDED"
+            if state is None:
+                state = RunState(
+                    run_id=run_dir.name,
+                    current_phase=phase,
+                    phase_status=PhaseStatus.PENDING.value,
+                    current_owner=_phase_to_owner(phase),
+                    retry_count=0,
+                    last_error="",
+                    active_handoff_id="",
+                    gate_failures=[],
+                )
+            else:
+                state.current_phase = phase
+                state.phase_status = PhaseStatus.PENDING.value
+                state.current_owner = _phase_to_owner(phase)
+                state.retry_count = 0
+                state.last_error = ""
+                state.active_handoff_id = ""
+                state.gate_failures = []
+            state_repo.save(state)
+            ManifestRepository(run_dir).remove_entries(["build.md"])
+        break
+finally:
+    if conn is not None:
+        conn.close()
+
+print(phase)
+"@ | python -
 Write-Host "[APSF] phase:     $currentPhase" -ForegroundColor Cyan
 
 if ($currentPhase -ne "BUILD_NEEDED" -and $currentPhase -ne "UNKNOWN") {
-    Write-Host "" 
+    Write-Host ""
     Write-Host "[Warn] Current phase is '$currentPhase', not BUILD_NEEDED." -ForegroundColor Yellow
     Write-Host "       This script is designed for BUILD_NEEDED only." -ForegroundColor DarkGray
     Write-Host "       For PLAN_NEEDED / REVIEW_NEEDED, use apsf-claude-act.ps1" -ForegroundColor DarkGray
-    $confirm = Read-Host "Continue anyway? [y/N]"
-    if ($confirm -ne "y" -and $confirm -ne "Y") {
-        Write-Host "Aborted." -ForegroundColor Yellow
-        exit 0
+    Write-Host "       Suggested next step:" -ForegroundColor DarkGray
+    Write-Host "         .\\scripts\\apsf-wrapper-act.ps1 $Run -Backend claude-cli" -ForegroundColor DarkGray
+    exit 2
+}
+
+# ── Model Assignment (Builder) ────────────────────────────────────────────
+# model-assignment.md が存在すれば Builder の assignment を読んで尊重する。
+# ファイルなし / 行なし → provider=unset として通常通り実行。
+
+$assignmentLines = @(apsf model-assignment $Run --role Builder 2>$null)
+$assignmentProvider = ($assignmentLines | Where-Object { $_ -match "^provider=(.+)" } | Select-Object -First 1) -replace "^provider=", ""
+$assignmentModel    = ($assignmentLines | Where-Object { $_ -match "^model=(.+)"    } | Select-Object -First 1) -replace "^model=", ""
+$assignmentHuman    = ($assignmentLines | Where-Object { $_ -eq "human=true"        } | Measure-Object).Count -gt 0
+
+if ($assignmentHuman) {
+    Write-Host ""
+    Write-Host "[Stop] model-assignment.md: Builder is human-assigned." -ForegroundColor Yellow
+    Write-Host "       Perform this build phase manually." -ForegroundColor DarkGray
+    Write-Host "       check: apsf next $Run" -ForegroundColor DarkGray
+    exit 0
+}
+
+if (-not [string]::IsNullOrWhiteSpace($assignmentProvider) -and $assignmentProvider -ne "unset") {
+    Write-Host "[APSF] builder:   provider=$assignmentProvider$(if ($assignmentModel) { " model=$assignmentModel" })" -ForegroundColor Cyan
+    if ($assignmentProvider -ne "anthropic") {
+        Write-Host "[Warn] model-assignment.md specifies provider=$assignmentProvider, but build wrapper uses Claude CLI (anthropic only)." -ForegroundColor Yellow
+        Write-Host "       Proceeding with Claude CLI default model." -ForegroundColor DarkGray
+        $assignmentModel = ""
     }
+} else {
+    Write-Host "[APSF] builder:   (no model-assignment.md — using claude default)" -ForegroundColor DarkGray
+}
+
+# ── Builder Specialist (B-TYPE) ───────────────────────────────────────────
+# execution-assignment.md の B-TYPE を解決し、specialist content があれば prompt に注入する。
+# gap の場合は warning を出し、generic Builder のまま続行する（停止しない）。
+
+$specialistLines  = @(apsf builder-specialist $Run 2>$null)
+$specialistCode   = ($specialistLines | Where-Object { $_ -match "^code=(.+)" }  | Select-Object -First 1) -replace "^code=",  ""
+$specialistMode   = ($specialistLines | Where-Object { $_ -match "^mode=(.+)" }  | Select-Object -First 1) -replace "^mode=",  ""
+$specialistGap    = ($specialistLines | Where-Object { $_ -eq "gap=true" }        | Measure-Object).Count -gt 0
+$specialistContent = $null
+
+if ($specialistGap) {
+    Write-Host "[Warn] Builder specialist gap: no B-TYPE match. Using generic Builder." -ForegroundColor Yellow
+} elseif (-not [string]::IsNullOrWhiteSpace($specialistCode)) {
+    Write-Host "[APSF] specialist: $specialistCode ($specialistMode)" -ForegroundColor Cyan
+    $rawContent = @(apsf builder-specialist $Run --print-content 2>$null)
+    if ($rawContent.Count -gt 0) {
+        $specialistContent = $rawContent -join [Environment]::NewLine
+    }
+} else {
+    Write-Host "[APSF] specialist: (none — generic Builder)" -ForegroundColor DarkGray
 }
 
 # ── Assemble prompt ───────────────────────────────────────────────────────
@@ -117,6 +266,8 @@ function Read-RunFile {
     }
     return $null
 }
+
+$planPath = Join-Path $runPath "plan.md"
 
 if (-not [string]::IsNullOrWhiteSpace($PromptFile)) {
     # Custom prompt file
@@ -161,6 +312,12 @@ $builderGuidance
 
 ---
 
+## Builder Specialist
+
+$(if (-not [string]::IsNullOrWhiteSpace($specialistContent)) { $specialistContent } else { "(none — generic Builder)" })
+
+---
+
 ## Run
 
 $Run
@@ -188,6 +345,8 @@ Do not begin any file edits until this output is complete.
 Implement the changes described in ``plan.md``.
 Write all output files directly to disk using your tools.
 Record your decisions and deviations in ``build.md``.
+``build.md`` is required for APSF phase advancement.
+Do not create a timestamped substitute such as ``build_rerun_YYYYMMDD_HHMMSS.md`` instead of ``build.md``.
 "@
 
     if ($hasBuildReview) {
@@ -202,10 +361,12 @@ Address these issues before proceeding.
 
 $buildReviewContent
 "@
-        Write-Host "[APSF] inputs:    plan.md (via Read tool) + build_review.md" -ForegroundColor Cyan
-    } else {
-        Write-Host "[APSF] inputs:    plan.md (via Read tool)" -ForegroundColor Cyan
     }
+
+    $inputsLabel = "plan.md (via Read tool)"
+    if ($hasBuildReview)       { $inputsLabel += " + build_review.md" }
+    if ($specialistContent)    { $inputsLabel += " + specialist=$specialistCode" }
+    Write-Host "[APSF] inputs:    $inputsLabel" -ForegroundColor Cyan
 }
 
 function Get-MeaningfulOutputTail {
@@ -296,6 +457,58 @@ function Write-FailureSummary {
     }
 }
 
+function Promote-LatestBuildRerunArtifact {
+    param(
+        [string]$RunDir,
+        [datetime]$NotBeforeUtc
+    )
+
+    $buildMdPath = Join-Path $RunDir "build.md"
+    if (Test-Path -LiteralPath $buildMdPath) {
+        return $false
+    }
+
+    $latestRerun = Get-ChildItem -LiteralPath $RunDir -Filter "build_rerun_*.md" -File |
+        Where-Object { $_.LastWriteTimeUtc -ge $NotBeforeUtc } |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $latestRerun) {
+        return $false
+    }
+
+    Copy-Item -LiteralPath $latestRerun.FullName -Destination $buildMdPath -Force
+    Write-Host "[APSF] canonicalized: promoted $($latestRerun.Name) -> build.md" -ForegroundColor DarkGray
+    return $true
+}
+
+function Get-HumanBlockerInfo {
+    param([string]$RunDir)
+
+    $payload = @"
+import json
+import sys
+from pathlib import Path
+from apsf.legacy.orchestration.rebuild_feedback import detect_human_owned_blocker, iter_build_blocker_sources
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+run_dir = Path(r"$RunDir")
+for name, text in iter_build_blocker_sources(run_dir):
+    blocker = detect_human_owned_blocker(text)
+    if blocker is not None:
+        print(json.dumps({"source": name, "summary": blocker["summary"], "actions": blocker["actions"]}, ensure_ascii=False))
+        raise SystemExit(0)
+
+print("")
+"@ | python -
+
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($payload)) {
+        return $null
+    }
+    return $payload.Trim()
+}
+
 Write-Host ""
 
 # ── Dry run ───────────────────────────────────────────────────────────────
@@ -309,7 +522,7 @@ if ($DryRun) {
     }
     Write-Host "─" * 60 -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "[DryRun] Would invoke: claude -p --tools '$Tools' --max-turns $MaxTurns" -ForegroundColor Yellow
+    Write-Host "[DryRun] Would invoke: claude -p --tools '$Tools' --permission-mode bypassPermissions --max-turns $MaxTurns" -ForegroundColor Yellow
     Write-Host "[DryRun] No files written. Remove -DryRun to execute." -ForegroundColor DarkGray
     exit 0
 }
@@ -318,8 +531,23 @@ if ($DryRun) {
 
 Write-Host "[1/2] Invoking claude (tool-enabled, max-turns=$MaxTurns)..." -ForegroundColor DarkGray
 Write-Host "      Tools: $Tools" -ForegroundColor DarkGray
+Write-Host "      permissions: bypassPermissions" -ForegroundColor DarkGray
 Write-Host "      (Builder will write files directly — no stdout capture)" -ForegroundColor DarkGray
 Write-Host ""
+
+$humanBlockerJson = Get-HumanBlockerInfo -RunDir $runPath
+if (-not [string]::IsNullOrWhiteSpace($humanBlockerJson)) {
+    $humanBlocker = $humanBlockerJson | ConvertFrom-Json
+    Write-Host "[STOP] Human-owned blocker detected before build." -ForegroundColor Yellow
+    Write-Host ("       source: {0}" -f $humanBlocker.source) -ForegroundColor DarkGray
+    Write-Host ("       {0}" -f $humanBlocker.summary) -ForegroundColor DarkGray
+    foreach ($action in @($humanBlocker.actions)) {
+        Write-Host ("       human action: {0}" -f $action) -ForegroundColor DarkGray
+    }
+    Write-Host ""
+    Write-Host "       Builder rerun skipped to avoid a no-op rebuild." -ForegroundColor DarkGray
+    exit 3
+}
 
 $claudeCmd = Get-Command "claude" -ErrorAction Stop
 $claudePath = $claudeCmd.Source
@@ -327,13 +555,19 @@ $claudePath = $claudeCmd.Source
 $claudeArgs = @(
     '-p',
     '--tools', $Tools,
+    '--permission-mode', 'bypassPermissions',
     '--output-format', 'text',
     '--no-session-persistence',
     '--max-turns', [string]$MaxTurns,
     '--disable-slash-commands'
 )
+if (-not [string]::IsNullOrWhiteSpace($assignmentModel)) {
+    $claudeArgs += @('--model', $assignmentModel)
+    Write-Host "      model override: $assignmentModel" -ForegroundColor DarkGray
+}
 
 try {
+    $buildStartUtc = [datetime]::UtcNow
     $claudeOutput = $assembledPrompt | & $claudePath @claudeArgs 2>&1 | Tee-Object -Variable _claudeCaptured
     $exitCode = $LASTEXITCODE
 } catch {
@@ -348,6 +582,7 @@ $hitMaxTurns = $claudeText -match 'Error:\s*Reached max turns'
 
 # ── Success / Phase transition check ─────────────────────────────────────
 
+$null = Promote-LatestBuildRerunArtifact -RunDir $runPath -NotBeforeUtc $buildStartUtc
 $postBuildPhase = (apsf next $Run --phase-only).Trim()
 $phaseAdvanced = ($postBuildPhase -ne "BUILD_NEEDED") -and ($postBuildPhase -ne "UNKNOWN")
 

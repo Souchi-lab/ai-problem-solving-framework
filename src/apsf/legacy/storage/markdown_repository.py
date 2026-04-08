@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from ...core.storage.artifact_repository import ArtifactRepository
+
 
 class MarkdownRepository:
     """
@@ -23,6 +25,7 @@ class MarkdownRepository:
 
     def __init__(self, base_dir: Path):
         self._base = base_dir
+        self._artifact_repo = ArtifactRepository()
 
     @property
     def base_dir(self) -> Path:
@@ -43,9 +46,7 @@ class MarkdownRepository:
         書き込んだファイルの Path を返す。
         """
         path = self._base / filename
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return path
+        return self._artifact_repo.write(path, content)
 
     def exists(self, filename: str) -> bool:
         """ファイルが存在するかどうかを返す。"""

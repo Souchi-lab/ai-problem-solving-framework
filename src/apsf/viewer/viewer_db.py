@@ -102,27 +102,33 @@ class ViewerDB:
         exit_code: int,
         stdout: str,
         stderr: str,
+        command: Optional[str] = None,
     ) -> None:
         finished_at = _now_iso()
+        command_sql = ", command = ?" if command is not None else ""
+        params = [
+            finished_at,
+            result_status,
+            exit_code,
+            _summarize(stdout),
+            _summarize(stderr),
+            stdout,
+            stderr,
+        ]
+        if command is not None:
+            params.append(command)
+        params.append(execution_id)
         with self._connect() as conn:
             conn.execute(
-                """
+                f"""
                 UPDATE action_executions
                 SET finished_at = ?, result_status = ?, exit_code = ?,
                     stdout_summary = ?, stderr_summary = ?,
                     stdout_full = ?, stderr_full = ?
+                    {command_sql}
                 WHERE id = ?
                 """,
-                (
-                    finished_at,
-                    result_status,
-                    exit_code,
-                    _summarize(stdout),
-                    _summarize(stderr),
-                    stdout,
-                    stderr,
-                    execution_id,
-                ),
+                tuple(params),
             )
             conn.commit()
 
@@ -168,6 +174,18 @@ class ViewerDB:
                 (taxonomy, run_name),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def list_recent_executions_for_run(self, taxonomy: str, run_name: str, limit: int = 5) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM action_executions
+                WHERE taxonomy = ? AND run_name = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (taxonomy, run_name, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_latest_rerun_comment(self, taxonomy: str, run_name: str) -> Optional[dict]:
         with self._connect() as conn:

@@ -11,6 +11,8 @@ CLI - APSF コマンドラインインターフェース（v0.1: CLI/Human 前�
     apsf check-env                    環境変数の設定状況を確認（API は optional）
     apsf show-execution-plan <run>    execution-assignment.md の内容を表示
     apsf init-followup <slug>         followups/ に4ファイルのスケルトンを生成
+    apsf list-followups               follow-up 一覧を全件表示
+    apsf status                       in-progress の follow-up と next attention を表示
 
 使用例:
     apsf start-run sochi-blocks_sns-post-template   # 日付が自動付与される
@@ -31,6 +33,8 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+
+from ...core.storage.artifact_repository import ArtifactRepository
 
 
 def _ensure_utf8_output() -> None:
@@ -489,13 +493,15 @@ def list_followups() -> None:
     expected_files = ("goal.md", "plan.md", "review.md", "result.md")
 
     def _followup_status(d: Path) -> str:
-        has_result = (d / "result.md").exists()
-        has_review = (d / "review.md").exists()
-        if has_result and has_review:
-            return "complete"
-        if has_result:
-            return "complete (review-skipped)"
-        return "in-progress"
+        from apsf.core.state.run_state_repository import RunStateRepository
+        state = RunStateRepository(d).load()
+        if state is not None:
+            is_done = state.current_phase in ("COMPLETE", "TRANSCRIPT_RECOMMENDED")
+        else:
+            is_done = (d / "result.md").exists()
+        if not is_done:
+            return "in-progress"
+        return "complete" if (d / "review.md").exists() else "complete (review-skipped)"
 
     typer.echo(f"Follow-ups: {followups_dir}")
     typer.echo("=" * 72)
@@ -509,6 +515,63 @@ def list_followups() -> None:
         typer.echo(f"  Files: {', '.join(present) if present else '(none)'}")
         if missing and status == "in-progress":
             typer.echo(f"  Missing: {', '.join(missing)}")
+
+
+@app.command("status")
+def status() -> None:
+    """in-progress の follow-up と next attention を表示する。"""
+    from ..config.settings import get_settings
+
+    settings = get_settings()
+    followups_dir = settings.framework_root / _FOLLOWUPS_DIR
+
+    if not followups_dir.exists():
+        typer.echo(f"[ERROR] Follow-ups directory not found: {followups_dir}", err=True)
+        raise typer.Exit(1)
+
+    followup_dirs = sorted(
+        [path for path in followups_dir.iterdir() if path.is_dir()],
+        key=lambda path: path.name.lower(),
+    )
+
+    if not followup_dirs:
+        typer.echo("[INFO] No follow-ups found.")
+        return
+
+    def _status(d: Path) -> str:
+        from apsf.core.state.run_state_repository import RunStateRepository
+        state = RunStateRepository(d).load()
+        if state is not None:
+            is_done = state.current_phase in ("COMPLETE", "TRANSCRIPT_RECOMMENDED")
+        else:
+            is_done = (d / "result.md").exists()
+        if not is_done:
+            return "in-progress"
+        return "complete" if (d / "review.md").exists() else "complete (review-skipped)"
+
+    expected_files = ("goal.md", "plan.md", "review.md", "result.md")
+
+    in_progress = [d for d in followup_dirs if _status(d) == "in-progress"]
+    complete = [d for d in followup_dirs if _status(d) != "in-progress"]
+
+    typer.echo(f"Status: {len(followup_dirs)} follow-ups — {len(in_progress)} in-progress, {len(complete)} complete")
+    typer.echo("=" * 72)
+
+    if in_progress:
+        typer.echo("In-Progress:")
+        for d in in_progress:
+            missing = [f for f in expected_files if not (d / f).exists()]
+            typer.echo(f"  {d.name}")
+            if missing:
+                typer.echo(f"    Next: write {missing[0]}  (Missing: {', '.join(missing)})")
+    else:
+        typer.echo("In-Progress: (none)")
+
+    if complete:
+        typer.echo("")
+        typer.echo("Complete:")
+        for d in complete:
+            typer.echo(f"  {d.name}  [{_status(d)}]")
 
 
 @app.command("show-structure")
@@ -684,6 +747,116 @@ def show_execution_plan(
         )
 
     typer.echo(f"\nFull plan: {assignment_path}")
+
+
+@app.command("model-assignment")
+def cmd_model_assignment(
+    run_name: str = typer.Argument(..., help="Run name"),
+    role: str = typer.Option("Builder", "--role", help="Role to query: Planner, Builder, Critic, Judge"),
+) -> None:
+    """model-assignment.md から指定 role の assignment を key=value 形式で表示する。
+
+    wrapper スクリプトが assignment authority を読み取るために使う。
+
+    出力形式:
+        provider=<anthropic|openai|gemini|human|unset>
+        model=<model name or empty>
+        human=<true|false>
+
+    model-assignment.md が存在しない、または指定 role の行がない場合は
+    provider=unset を返す（エラーにしない）。
+    """
+    from ..config.settings import get_settings
+    from ..orchestration.assignment_service import AssignmentService
+    from ..storage.run_repository import RunRepository
+    from ...core.domain.models import Role
+
+    _ROLE_MAP: dict[str, Role] = {
+        "planner": Role.PLANNER,
+        "builder": Role.BUILDER,
+        "critic": Role.CRITIC,
+        "judge": Role.JUDGE,
+    }
+
+    target_role = _ROLE_MAP.get(role.lower())
+    if target_role is None:
+        typer.echo("provider=unset\nmodel=\nhuman=false")
+        return
+
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
+    assignment_path = run_dir / "model-assignment.md"
+
+    if not assignment_path.exists():
+        typer.echo("provider=unset\nmodel=\nhuman=false")
+        return
+
+    service = AssignmentService(settings=settings)
+    context = service.load_from_file(assignment_path, run_dir)
+    resolved = service.resolve_assignment(context, target_role)
+
+    if resolved.provider is None and not resolved.is_human:
+        typer.echo("provider=unset\nmodel=\nhuman=false")
+        return
+
+    if resolved.is_human:
+        typer.echo("provider=human\nmodel=\nhuman=true")
+        return
+
+    provider_str = resolved.provider.value if resolved.provider else "unset"
+    model_str = resolved.model or ""
+    typer.echo(f"provider={provider_str}\nmodel={model_str}\nhuman=false")
+
+
+@app.command("builder-specialist")
+def cmd_builder_specialist(
+    run_name: str = typer.Argument(..., help="Run name"),
+    print_content: bool = typer.Option(False, "--print-content", help="Print specialist file content for prompt injection"),
+) -> None:
+    """execution-assignment.md の B-TYPE を解決し、Builder specialist を表示する。
+
+    デフォルト出力 (key=value):
+        code=<B-XX or empty>
+        mode=<explicit|inferred|unresolved>
+        gap=<true|false>
+
+    --print-content:
+        specialist ファイルの内容を stdout に出力する（build wrapper の prompt 注入用）。
+        B-TYPE が none / unresolved / missing の場合は空出力。
+    """
+    from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
+    from .specialist_registry import resolve_builder_specialist
+
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
+
+    def _read(filename: str) -> str:
+        path = run_dir / filename
+        try:
+            return path.read_text(encoding="utf-8") if path.exists() else ""
+        except OSError:
+            return ""
+
+    goal_text = _read("goal.md")
+    assignment_text = _read("execution-assignment.md")
+
+    selection = resolve_builder_specialist(goal_text, assignment_text, settings.framework_root)
+
+    has_gap = selection.mode == "unresolved" or (
+        selection.mode == "explicit"
+        and bool(selection.ptype)
+        and not selection.specialist_content
+    )
+
+    if print_content:
+        if selection.specialist_content:
+            typer.echo(selection.specialist_content)
+        return
+
+    typer.echo(f"code={selection.ptype or ''}\nmode={selection.mode}\ngap={'true' if has_gap else 'false'}")
 
 
 @app.command("generate-transcript")
@@ -918,10 +1091,12 @@ def next_cmd(
     出力はあくまで推定です。迷ったら直接ファイルを確認してください。
     --debug を付けると判定根拠（examined files / decision reason）も表示します。
     """
+    import dataclasses
     from ..config.settings import get_settings
-    from ..orchestration.phase_detector import PhaseDetector
+    from ..orchestration.phase_detector import Phase, PhaseDetector
     from ..orchestration.next_instruction_builder import NextInstructionBuilder
     from ..storage.run_repository import RunRepository
+    from ...core.state.run_state_repository import RunStateRepository
 
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
@@ -931,7 +1106,56 @@ def next_cmd(
         typer.echo(f"[ERROR] Run not found: {run_dir}", err=True)
         raise typer.Exit(1)
 
-    info = PhaseDetector(run_dir).detect()
+    detector = PhaseDetector(run_dir)
+    state_repo = RunStateRepository(run_dir)
+    existing_state = state_repo.load()
+    advisory_info = detector.detect_advisory()
+
+    if existing_state is not None:
+        # Canonical phase from run_state.json
+        try:
+            canonical_phase = Phase[existing_state.current_phase]
+        except KeyError:
+            canonical_phase = advisory_info.phase
+        if (
+            canonical_phase != advisory_info.phase
+            and str(existing_state.phase_status).strip().lower() != "in_progress"
+        ):
+            owner_map = {
+                Phase.PLAN_NEEDED: "Planner",
+                Phase.BUILD_NEEDED: "Builder",
+                Phase.REVIEW_NEEDED: "Critic",
+                Phase.IMPROVE_NEEDED: "Human",
+                Phase.RESULT_NEEDED: "Human",
+                Phase.TRANSCRIPT_RECOMMENDED: "Human",
+                Phase.COMPLETE: "(none)",
+            }
+            try:
+                from ...core.state.transition_service import TransitionService
+                TransitionService().transition(
+                    run_dir,
+                    to_phase=advisory_info.phase.value,
+                    actor="system",
+                    reason="apsf next advisory sync: canonical phase diverged from advisory",
+                )
+                canonical_phase = advisory_info.phase
+                info = dataclasses.replace(advisory_info, phase=canonical_phase)
+                phase_source = "[canonical]"
+            except Exception as exc:
+                info = advisory_info
+                phase_source = "[advisory]"
+                typer.echo(
+                    "[Warn] Failed to refresh run_state.json from advisory phase; "
+                    f"showing advisory phase instead. ({exc})",
+                    err=True,
+                )
+        else:
+            info = dataclasses.replace(advisory_info, phase=canonical_phase)
+            phase_source = "[canonical]"
+    else:
+        # Advisory: no run_state.json, use file heuristic
+        info = advisory_info
+        phase_source = "[advisory]"
 
     if phase_only:
         typer.echo(info.phase.value)
@@ -942,7 +1166,7 @@ def next_cmd(
     sep = "=" * 60
     typer.echo(f"\n{sep}")
     typer.echo(f"Run   : {run_name}")
-    typer.echo(f"Phase : {info.phase.value}")
+    typer.echo(f"Phase : {info.phase.value}  {phase_source}")
     typer.echo(sep)
 
     typer.echo(f"\nNext Role : {instruction.next_role}")
@@ -1039,6 +1263,10 @@ def write_phase_cmd(
         False, "--force", "-f",
         help="Overwrite target file even if it already has meaningful content",
     ),
+    force_reason: Optional[str] = typer.Option(
+        None, "--force-reason",
+        help="Reason for forcing a cross-role or overwrite override (required with --force)",
+    ),
 ) -> None:
     """
     現在の phase に対応する md ファイルへコンテンツを保存する。
@@ -1081,6 +1309,35 @@ def write_phase_cmd(
     from ..storage.run_repository import RunRepository
     from .io import read_stdin_utf8
 
+    def _next_phase_after_write(current_phase: Phase) -> Phase:
+        if current_phase == Phase.SETUP_NEEDED:
+            return Phase.GOAL_NEEDED
+        if current_phase == Phase.GOAL_NEEDED:
+            return Phase.PLAN_NEEDED
+        if current_phase == Phase.PLAN_NEEDED:
+            return Phase.BUILD_NEEDED
+        if current_phase == Phase.BUILD_NEEDED:
+            return Phase.REVIEW_NEEDED
+        if current_phase == Phase.REVIEW_NEEDED:
+            if detector._exists("improve-plan.md") and not detector._is_filled("improve-plan.md"):
+                return Phase.IMPROVE_PLAN_OPTIONAL
+            return Phase.IMPROVE_NEEDED
+        if current_phase == Phase.IMPROVE_PLAN_OPTIONAL:
+            return Phase.IMPROVE_NEEDED
+        if current_phase == Phase.IMPROVE_NEEDED:
+            if detector._exists("verify.md") and not detector._is_filled("verify.md"):
+                return Phase.VERIFY_OPTIONAL
+            return Phase.RESULT_NEEDED
+        if current_phase == Phase.VERIFY_OPTIONAL:
+            return Phase.RESULT_NEEDED
+        if current_phase == Phase.RESULT_NEEDED:
+            if detector._is_filled("transcript.md"):
+                return Phase.COMPLETE
+            return Phase.TRANSCRIPT_RECOMMENDED
+        if current_phase == Phase.TRANSCRIPT_RECOMMENDED:
+            return Phase.COMPLETE
+        return current_phase
+
     settings = get_settings()
     repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
     run_dir = repo.get_run_dir(run_name)
@@ -1091,7 +1348,41 @@ def write_phase_cmd(
 
     # ── Phase detection ─────────────────────────────────────────────────────
     detector = PhaseDetector(run_dir)
-    info = detector.detect()
+    advisory_info = detector.detect_advisory()
+    info = advisory_info
+    try:
+        import dataclasses
+
+        from ...core.state.run_state_repository import RunStateRepository
+
+        existing_state = RunStateRepository(run_dir).load()
+        if existing_state is not None and existing_state.current_phase:
+            try:
+                canonical_phase = Phase[existing_state.current_phase]
+                phase_target_map = {
+                    Phase.SETUP_NEEDED: ("Human", "execution-assignment.md"),
+                    Phase.GOAL_NEEDED: ("Human", "goal.md"),
+                    Phase.PLAN_NEEDED: ("Planner", "plan.md"),
+                    Phase.IMPROVE_PLAN_OPTIONAL: ("Judge (Human)", "improve-plan.md"),
+                    Phase.BUILD_NEEDED: ("Builder", "build.md"),
+                    Phase.REVIEW_NEEDED: ("Critic", "review.md"),
+                    Phase.IMPROVE_NEEDED: ("Judge (Human)", "improve.md"),
+                    Phase.VERIFY_OPTIONAL: ("Judge (Human)", "verify.md"),
+                    Phase.RESULT_NEEDED: ("Human", "result.md"),
+                    Phase.TRANSCRIPT_RECOMMENDED: ("Human (optional)", "transcript.md"),
+                    Phase.COMPLETE: ("(none)", "(none)"),
+                }
+                next_role, file_to_write = phase_target_map.get(
+                    canonical_phase,
+                    (advisory_info.next_role, advisory_info.file_to_write),
+                )
+                info = dataclasses.replace(advisory_info, phase=canonical_phase)
+                info.next_role = next_role
+                info.file_to_write = file_to_write
+            except KeyError:
+                info = advisory_info
+    except Exception:
+        info = advisory_info
     instruction = NextInstructionBuilder().build(info, run_name)
 
     # ── Header → stderr (UI metadata) ───────────────────────────────────────
@@ -1128,8 +1419,35 @@ def write_phase_cmd(
     from .role_rules import GuardSeverity, check_role_boundary, role_from_phase
 
     _guard_role = role_from_phase(info.phase.value)
-    if _guard_role is not None:
-        _guard_v = check_role_boundary(_guard_role, target_file, force=force)
+
+    # ── Permission matrix preflight (前段: unified evaluator) ─────────────────
+    # tool registry から write_phase の operation_type を取得し、
+    # permission matrix で判定する。既存の check_role_boundary は downstream で継続。
+    if _guard_role is not None and not print_prompt and not dry_run:
+        from ...core.tools.tool_registry import build_default_registry
+        from ...core.permissions.permission_matrix import (
+            PermissionEvaluator,
+            PermissionRequest,
+            infer_target_scope,
+        )
+        _tool_entry = build_default_registry().get("write_phase")
+        _pm_scope = infer_target_scope(_guard_role, target_file)
+        _pm_req = PermissionRequest(
+            operation_type=_tool_entry.descriptor.operation_type,
+            target_scope=_pm_scope,
+            role=_guard_role,
+            force=force,
+            force_reason=force_reason,
+        )
+        _pm_decision = PermissionEvaluator().evaluate(_pm_req)
+        if not _pm_decision.allowed:
+            typer.echo(f"[Permission] {_pm_decision.reason}", err=True)
+            raise typer.Exit(2)
+
+    if _guard_role is not None and not print_prompt and not dry_run:
+        _guard_v = check_role_boundary(
+            _guard_role, target_file, force=force, override_reason=force_reason
+        )
         if _guard_v is not None:
             typer.echo(_guard_v.message, err=True)
             typer.echo(_guard_v.override_hint, err=True)
@@ -1154,6 +1472,17 @@ def write_phase_cmd(
         typer.echo(f"\n[DRY-RUN] Would write to: {target_path}", err=True)
         raise typer.Exit(0)
 
+    if force and not force_reason:
+        typer.echo(
+            "[Error] --force-reason is required when using --force.",
+            err=True,
+        )
+        typer.echo(
+            f"  Example: apsf write-phase {run_name} --stdin --force --force-reason \"intentional overwrite\"",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     # ── Overwrite protection (before reading stdin) ───────────────────────────
     # _has_any_content（1行以上）で判定: 部分記入のファイルも保護する
     if not force and detector._has_any_content(target_file):
@@ -1164,7 +1493,7 @@ def write_phase_cmd(
             )
             typer.echo(f"  Path : {target_path}", err=True)
             typer.echo(
-                f"  To overwrite: apsf write-phase {run_name} --stdin --force",
+                f"  To overwrite: apsf write-phase {run_name} --stdin --force --force-reason \"intentional overwrite\"",
                 err=True,
             )
             raise typer.Exit(1)
@@ -1214,8 +1543,61 @@ def write_phase_cmd(
         )
         raise typer.Exit(1)
 
+    # ── Role boundary check (pre-save) ───────────────────────────────────────
+    from .role_rules import GuardSeverity, check_role_boundary, role_from_phase
+    writing_role = role_from_phase(info.phase.value)
+    if writing_role:
+        violation = check_role_boundary(
+            writing_role, target_file, force=force, override_reason=force_reason
+        )
+        if violation:
+            if violation.severity == GuardSeverity.HARD_STOP:
+                typer.echo(violation.message, err=True)
+                typer.echo(violation.override_hint, err=True)
+                raise typer.Exit(1)
+            else:
+                typer.echo(f"[Warn] {violation.message}", err=True)
+                typer.echo(violation.override_hint, err=True)
+
     # ── Save ─────────────────────────────────────────────────────────────────
-    target_path.write_text(content, encoding="utf-8")
+    ArtifactRepository(writing_role=writing_role).write(target_path, content)
+
+    # ── Canonical state sync after write-phase ───────────────────────────────
+    # write-phase is often used as the sink for `apsf act --print-prompt | ... | apsf write-phase --stdin`.
+    # Without a state sync here, the artifact is saved but run_state.json can remain on the old phase until
+    # a later `apsf next` call repairs it. That leaves the Viewer showing stale actions such as "Run Critic"
+    # immediately after review.md was already written.
+    try:
+        from ...core.state.transition_service import TransitionService
+
+        next_phase = _next_phase_after_write(info.phase)
+        TransitionService().transition(
+            run_dir,
+            to_phase=next_phase.value,
+            actor="system",
+            reason="write-phase canonical state sync",
+        )
+    except Exception as exc:
+        typer.echo(
+            f"[Warn] Saved {target_file}, but failed to sync run_state.json: {exc}",
+            err=True,
+        )
+
+    # ── Force audit ──────────────────────────────────────────────────────────
+    if force:
+        from ...core.storage.force_audit_repository import (
+            ForceAuditRepository,
+            make_audit_entry,
+        )
+        ForceAuditRepository(run_dir).append(
+            make_audit_entry(
+                command="write-phase",
+                target_file=target_file,
+                role=writing_role or "",
+                reason=force_reason,
+                override_kind="overwrite",
+            )
+        )
 
     typer.echo(f"\n{sep}", err=True)
     typer.echo(f"[Saved] {target_file}", err=True)
@@ -1340,7 +1722,7 @@ def generate_setup_cmd(
         raise typer.Exit(1)
 
     target_path = run_dir / "execution-assignment.md"
-    target_path.write_text(content, encoding="utf-8")
+    ArtifactRepository().write(target_path, content)
 
     typer.echo(f"\n[Saved] execution-assignment.md")
     typer.echo(f"  Path : {target_path}")
@@ -1353,6 +1735,10 @@ def act_cmd(
     force: bool = typer.Option(
         False, "--force", "-f",
         help="Overwrite target file even if it already has content",
+    ),
+    force_reason: Optional[str] = typer.Option(
+        None, "--force-reason",
+        help="Reason for forcing overwrite or gate bypass (required with --force)",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run",
@@ -1377,7 +1763,7 @@ def act_cmd(
 
     使用例 (API あり):
       apsf act <run>               # LLM を呼び出して自動生成・保存
-      apsf act <run> --force       # 既存コンテンツを上書き
+      apsf act <run> --force --force-reason "intentional bypass"  # 既存コンテンツ上書き / gate bypass
 
     使用例 (API なし / dogfood):
       apsf act <run> --dry-run     # phase 情報 + プロンプト全文を確認
@@ -1479,10 +1865,23 @@ def act_cmd(
         from .role_rules import GuardSeverity, check_role_boundary, role_from_phase
         from ..orchestration.phase_detector import PhaseDetector as _PreflightDetector
 
+        if force and not force_reason:
+            typer.echo("[Error] --force-reason is required when using --force.", err=True)
+            typer.echo(
+                f"  Example: apsf act {run_name} --force --force-reason \"intentional bypass\"",
+                err=True,
+            )
+            raise typer.Exit(2)
+
         _pf_info = _PreflightDetector(run_dir).detect()
         _pf_role = role_from_phase(_pf_info.phase.value)
         if _pf_role is not None:
-            _pf_v = check_role_boundary(_pf_role, _pf_info.file_to_write, force=force)
+            _pf_v = check_role_boundary(
+                _pf_role,
+                _pf_info.file_to_write,
+                force=force,
+                override_reason=force_reason,
+            )
             if _pf_v is not None:
                 typer.echo(f"[Preflight] {_pf_v.message}", err=True)
                 typer.echo(_pf_v.override_hint, err=True)
@@ -1497,6 +1896,7 @@ def act_cmd(
             run_dir=run_dir,
             run_name=run_name,
             force=force,
+            force_reason=force_reason,
             dry_run=resolve_dry,
             settings=settings,
         )
@@ -1528,7 +1928,10 @@ def act_cmd(
 
     elif result.mode == "already_filled":
         typer.echo(f"\n[Info] {result.stop_reason}", err=True)
-        typer.echo(f"       Use: apsf act {run_name} --force", err=True)
+        typer.echo(
+            f"       Use: apsf act {run_name} --force --force-reason \"intentional overwrite\"",
+            err=True,
+        )
 
     elif result.mode == "auto":
         if result.files_read:
@@ -1628,6 +2031,7 @@ def build_cmd(
     """
     from ..config.settings import get_settings
     from ..orchestration.phase_detector import PhaseDetector
+    from ..orchestration.rebuild_feedback import detect_human_owned_blocker, latest_review_artifact
     from ..storage.run_repository import RunRepository
 
     settings = get_settings()
@@ -1665,6 +2069,29 @@ def build_cmd(
     typer.echo(f"    .\\scripts\\apsf-claude-build.ps1 $run -DryRun")
     typer.echo(f"")
 
+    sources: list[tuple[str, Path]] = []
+    review_path = latest_review_artifact(run_dir)
+    if review_path is not None:
+        sources.append((review_path.name, review_path))
+    build_review_path = run_dir / "build_review.md"
+    if build_review_path.exists():
+        sources.append((build_review_path.name, build_review_path))
+
+    for source_name, path in sources:
+        text = path.read_text(encoding="utf-8").strip()
+        blocker = detect_human_owned_blocker(text) if text else None
+        if blocker is None:
+            continue
+        typer.echo("[Human Blocker]")
+        typer.echo(f"  source: {source_name}")
+        typer.echo(f"  {blocker['summary']}")
+        for action in list(blocker.get("actions", []))[:3]:
+            typer.echo(f"  - {action}")
+        typer.echo("")
+        typer.echo("  Wrapper builds will stop until this manual gate is resolved.")
+        typer.echo("")
+        break
+
     if not build_script.exists():
         typer.echo(f"[Warn] Build script not found: {build_script}", err=True)
     else:
@@ -1676,6 +2103,212 @@ def build_cmd(
     typer.echo(f"[Note] Builder writes files directly to disk.")
     typer.echo(f"       build.md is an optional log artifact the Builder should also create.")
     typer.echo(f"{sep}\n")
+
+
+@app.command("capture-checkpoint")
+def capture_checkpoint_cmd(
+    run_name: str = typer.Argument(..., help="Run name"),
+    checkpoint_id: str = typer.Argument(..., help="Checkpoint ID"),
+    note: str = typer.Option("", "--note", help="Optional summary note"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite existing checkpoint with the same ID"),
+) -> None:
+    """run_state.json を読んで execution checkpoint を recovery/checkpoints/ に保存する。
+
+    run_state.json が必須。session_events.jsonl が存在する場合は最新 event を
+    related_event_id として記録する（なければ空文字）。
+
+    current truth（run_state.json / session_events.jsonl）は変更しない。
+    同一 checkpoint_id が既に存在する場合は --overwrite を指定しない限り拒否する。
+
+    使用例:
+      apsf capture-checkpoint <run> cp-001
+      apsf capture-checkpoint <run> cp-001 --note "before risky change"
+      apsf capture-checkpoint <run> cp-001 --overwrite
+    """
+    from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
+    from ...core.restore.checkpoint_capture_service import (
+        CheckpointCaptureError,
+        CheckpointCaptureService,
+    )
+
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
+
+    if not run_dir.exists():
+        typer.echo(f"[ERROR] Run directory not found: {run_dir}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        result = CheckpointCaptureService().capture(
+            run_dir=run_dir,
+            checkpoint_id=checkpoint_id,
+            summary=note,
+            overwrite=overwrite,
+        )
+    except CheckpointCaptureError as exc:
+        typer.echo(f"[ERROR] {exc}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"[OK] Checkpoint captured: {result.checkpoint_id}", err=True)
+    typer.echo(f"  phase: {result.phase}", err=True)
+    typer.echo(f"  phase_status: {result.phase_status}", err=True)
+    typer.echo(f"  related_event_id: {result.related_event_id or '(none)'}", err=True)
+    typer.echo(result.checkpoint_id)
+
+
+@app.command("apply-checkpoint")
+def apply_checkpoint_cmd(
+    run_name: str = typer.Argument(..., help="Run name"),
+    checkpoint_id: str = typer.Argument(..., help="Checkpoint ID"),
+    apply_reason: str = typer.Option(
+        ...,
+        "--apply-reason",
+        "--restore-reason",
+        help="Explicit reason for overwriting current execution state (required)",
+    ),
+) -> None:
+    """own-run execution checkpoint を current run_state.json に最小 apply する。
+    apply scope は phase / phase_status / current_owner のみで、
+    file payload / session event log / mixed apply は扱わない。
+
+    使用例:
+      apsf apply-checkpoint <run> cp-001 --apply-reason "planner state を再開する"
+    """
+    from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
+    from ...core.restore.checkpoint_apply_service import (
+        CheckpointApplyError,
+        CheckpointApplyService,
+    )
+
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
+
+    if not run_dir.exists():
+        typer.echo(f"[ERROR] Run directory not found: {run_dir}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        result = CheckpointApplyService().apply(run_dir, checkpoint_id, apply_reason)
+    except CheckpointApplyError as exc:
+        typer.echo(
+            f"[Trace] checkpoint apply failed: checkpoint_id={checkpoint_id} "
+            f"reason={apply_reason}",
+            err=True,
+        )
+        typer.echo(f"[ERROR] {exc}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(
+        f"[Trace] checkpoint apply succeeded: checkpoint_id={checkpoint_id} "
+        f"reason={apply_reason}",
+        err=True,
+    )
+    typer.echo(f"[OK] Checkpoint applied: {result.checkpoint_id}", err=True)
+    typer.echo(f"[Info] phase: {result.phase}", err=True)
+    typer.echo(f"[Info] phase_status: {result.phase_status}", err=True)
+    typer.echo(f"[Info] current_owner: {result.current_owner}", err=True)
+    typer.echo(f"[Info] Reason: {result.apply_reason}", err=True)
+    typer.echo(result.checkpoint_id)
+
+
+@app.command("capture-snapshot")
+def capture_snapshot_cmd(
+    run_name: str = typer.Argument(..., help="Run name"),
+    snapshot_id: str = typer.Argument(..., help="Snapshot ID"),
+    targets: list[str] = typer.Argument(..., help="Files to capture (run-relative paths)"),
+    source_phase: str = typer.Option("", "--source-phase", help="Phase at capture time (optional)"),
+) -> None:
+    """text artifact の file snapshot を recovery/snapshots/<snapshot_id>/ に保存する。
+
+    payload path は run-relative POSIX canonical form で保存される。
+    non-UTF-8 / binary content は capture を拒否する。
+
+    使用例:
+      apsf capture-snapshot <run> snap-001 plan.md build.md
+      apsf capture-snapshot <run> snap-001 plan.md --source-phase BUILD_NEEDED
+    """
+    from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
+    from ...core.restore.snapshot_capture_service import (
+        SnapshotCaptureError,
+        SnapshotCaptureService,
+    )
+
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
+
+    if not run_dir.exists():
+        typer.echo(f"[ERROR] Run directory not found: {run_dir}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        result = SnapshotCaptureService().capture(
+            run_dir=run_dir,
+            snapshot_id=snapshot_id,
+            target_paths=targets,
+            source_phase=source_phase,
+        )
+    except SnapshotCaptureError as exc:
+        typer.echo(f"[ERROR] {exc}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"[OK] Snapshot captured: {result.snapshot_id}", err=True)
+    for path in result.captured_paths:
+        typer.echo(f"  {path}")
+    typer.echo(f"[Info] encoding: {result.encoding}", err=True)
+
+
+@app.command("restore-snapshot")
+def restore_snapshot_cmd(
+    run_name: str = typer.Argument(..., help="Run name"),
+    snapshot_id: str = typer.Argument(..., help="Snapshot ID (directory name under recovery/snapshots/)"),
+    restore_reason: str = typer.Option(
+        ...,
+        "--restore-reason",
+        help="Explicit reason for overwriting current file state (required)",
+    ),
+) -> None:
+    """own-run file snapshot を current run directory に apply する。
+
+    safety gate を通した上で、recovery/snapshots/<snapshot_id>/payload/ の
+    ファイルを run directory に safe write で復元する。
+
+    gate rules (run-063 spec):
+      - --restore-reason が必須
+      - system artifact touching snapshot は blocked
+      - foreign-run snapshot は blocked
+      - mixed restore は blocked
+
+    使用例:
+      apsf restore-snapshot <run> snap-001 --restore-reason "plan.md の誤記修正"
+    """
+    from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
+    from ...core.restore.restore_service import RestoreError, RestoreService
+
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+    run_dir = repo.get_run_dir(run_name)
+
+    if not run_dir.exists():
+        typer.echo(f"[ERROR] Run directory not found: {run_dir}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        result = RestoreService().apply_snapshot(run_dir, snapshot_id, restore_reason)
+    except RestoreError as exc:
+        typer.echo(f"[ERROR] {exc}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"[OK] Restored snapshot: {result.snapshot_id}", err=True)
+    for path in result.restored_paths:
+        typer.echo(f"  {path}")
+    typer.echo(f"[Info] Reason: {result.restore_reason}", err=True)
 
 
 if __name__ == "__main__":

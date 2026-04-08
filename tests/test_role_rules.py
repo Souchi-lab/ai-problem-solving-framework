@@ -56,10 +56,12 @@ def test_builder_can_write_handoff_md():
     assert check_role_boundary("Builder", "handoff.md") is None
 
 
-def test_builder_can_write_plan_md():
-    # Builder reading plan is expected; writing plan.md is not explicitly forbidden
-    # (Planner writes it, but Builder is not listed as forbidden for plan.md)
-    assert check_role_boundary("Builder", "plan.md") is None
+def test_builder_cannot_write_plan_md():
+    # ownership.py が canonical: plan.md の allowed_writers は ("Planner",) のみ
+    # Builder は plan.md に書けない（allowed list ベースの新ポリシー）
+    v = check_role_boundary("Builder", "plan.md")
+    assert v is not None
+    assert v.severity == GuardSeverity.HARD_STOP
 
 
 # ---------------------------------------------------------------------------
@@ -119,19 +121,25 @@ def test_critic_can_write_review_md():
 
 
 # ---------------------------------------------------------------------------
-# --force downgrades HARD_STOP to WARNING
+# --force with reason downgrades HARD_STOP to WARNING
 # ---------------------------------------------------------------------------
 
-def test_force_downgrades_hardstop_to_warning_builder_review():
+def test_force_with_reason_downgrades_hardstop_to_warning_builder_review():
+    v = check_role_boundary("Builder", "review.md", force=True, override_reason="handoff approved")
+    assert v is not None
+    assert v.severity == GuardSeverity.WARNING
+
+
+def test_force_with_reason_downgrades_hardstop_to_warning_planner_build():
+    v = check_role_boundary("Planner", "build.md", force=True, override_reason="emergency fix")
+    assert v is not None
+    assert v.severity == GuardSeverity.WARNING
+
+
+def test_force_without_reason_remains_hardstop():
     v = check_role_boundary("Builder", "review.md", force=True)
     assert v is not None
-    assert v.severity == GuardSeverity.WARNING
-
-
-def test_force_downgrades_hardstop_to_warning_planner_build():
-    v = check_role_boundary("Planner", "build.md", force=True)
-    assert v is not None
-    assert v.severity == GuardSeverity.WARNING
+    assert v.severity == GuardSeverity.HARD_STOP
 
 
 def test_force_on_allowed_file_returns_none():
@@ -151,7 +159,7 @@ def test_violation_message_contains_role_and_file():
 
 
 def test_force_violation_override_hint_mentions_force():
-    v = check_role_boundary("Builder", "review.md", force=True)
+    v = check_role_boundary("Builder", "review.md", force=True, override_reason="approved")
     assert v is not None
     assert "--force" in v.override_hint or "Override" in v.override_hint
 
@@ -166,9 +174,12 @@ def test_non_force_violation_hint_mentions_force():
 # Unknown / human roles — fail-open
 # ---------------------------------------------------------------------------
 
-def test_unknown_role_returns_none():
-    # Unknown role → no rule → no violation (fail-open)
-    assert check_role_boundary("UnknownRole", "review.md") is None
+def test_unknown_role_blocked_for_known_artifact():
+    # ownership.py が canonical: review.md の allowed_writers は ("Critic",) のみ
+    # 未知の role も allowed_writers にない場合は HARD_STOP（allowed list ベース）
+    v = check_role_boundary("UnknownRole", "review.md")
+    assert v is not None
+    assert v.severity == GuardSeverity.HARD_STOP
 
 
 def test_human_role_returns_none():

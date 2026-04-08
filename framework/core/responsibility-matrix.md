@@ -74,6 +74,7 @@ This matrix does not define:
 | `review.md` | independent evaluation of build quality and risks | Critic | Judge | findings-first artifact |
 | `improve.md` | explicit accept / iterate decision and required changes | Judge | next iteration or Result | bridge between review and closure |
 | `result.md` | final accepted outcome and reusable lessons | Judge / Human | future runs | closes the run |
+| `force_audit.json` | per-run audit trail for `--force` overrides | tooling / command path invoking the override | Human, Builder, future tooling / GUI | canonical record of override fact and reason-presence; not a phase artifact |
 | `transcript.md` | optional compiled record of the full run | Human / tooling | future reference | convenience artifact, not canonical decision source |
 
 ---

@@ -254,6 +254,19 @@ When a viewer-related fw-improvement run closes:
 2. update this file with any surviving follow-ons
 3. remove or shrink items that were actually completed
 
+GUI-affecting viewer runs must also record verification beyond build-only checks.
+
+- Do not stop at `py_compile`, API tests, or `npm run build` when the change affects visible viewer behavior.
+- Verify the intended operator flow in the GUI, at least as a manual smoke if no E2E exists yet.
+- Include state-transition checks when relevant:
+  - run selection or child-run selection
+  - tab switch or panel open
+  - required fetch firing
+  - visible UI render
+  - post-action state change
+- If the run changes Agent OS behavior, prefer proving it on a child run as well as a parent run when that distinction matters.
+- If GUI verification was not completed, call that out explicitly in `build.md` / `review.md` / `result.md`; do not imply the UX is verified.
+
 ---
 
 ## Run Mapping

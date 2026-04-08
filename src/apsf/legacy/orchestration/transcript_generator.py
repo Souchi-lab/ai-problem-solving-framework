@@ -17,6 +17,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from ...core.storage.artifact_repository import ArtifactRepository
+
 
 # transcript に含めるファイルの順序定義
 # (filename, セクション見出しラベル)
@@ -43,6 +45,9 @@ _EXCLUDED_FILENAME = "transcript.md"
 
 
 class TranscriptGenerator:
+    def __init__(self) -> None:
+        self._artifact_repo = ArtifactRepository()
+
     """
     run ディレクトリ内の md ファイルから transcript.md を生成する。
 
@@ -108,8 +113,7 @@ class TranscriptGenerator:
         """
         content = self.generate(run_dir, run_name)
         output_path = run_dir / _EXCLUDED_FILENAME
-        output_path.write_text(content, encoding="utf-8")
-        return output_path
+        return self._artifact_repo.write(output_path, content)
 
     def list_sources(self, run_dir: Path) -> list[tuple[str, bool]]:
         """

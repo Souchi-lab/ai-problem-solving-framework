@@ -14,13 +14,30 @@ from typing import Optional
 
 
 # run 命名規則のパターン: YYYY-MM-DD_case-key_topic または YYYY-MM-DD-NNN_case-key_topic
-_RUN_NAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}(-\d+)?(_[a-z0-9-]+)+$")
+_RUN_NAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}(-\d+)?(_[a-z0-9-]+){2,}$")
 
 # child run 命名規則のパターン: NNNcN_case-key_topic（親番号3桁以上 + c + 連番）
-_CHILD_RUN_NAME_PATTERN = re.compile(r"^\d{3,}c\d+(_[a-z0-9-]+)+$")
+_CHILD_RUN_NAME_PATTERN = re.compile(r"^\d{3,}c\d+(_[a-z0-9-]+){2,}$")
 
 # taxonomy ディレクトリ名（lookup 優先順）
 _TAXONOMY_DIRS: tuple[str, ...] = ("fw-improvement", "work", "verification")
+
+# completion semantics: state-first, result.md fallback
+_COMPLETE_PHASES = frozenset({"COMPLETE", "TRANSCRIPT_RECOMMENDED"})
+
+
+def _is_run_dir_completed(run_dir: Path) -> bool:
+    """
+    run ディレクトリが完了しているかを state-first で判定する。
+
+    1. run_state.json が存在する場合 → current_phase が COMPLETE / TRANSCRIPT_RECOMMENDED なら True
+    2. run_state.json が存在しない場合（legacy / bootstrap 前）→ result.md exists でフォールバック
+    """
+    from apsf.core.state.run_state_repository import RunStateRepository
+    state = RunStateRepository(run_dir).load()
+    if state is not None:
+        return state.current_phase in _COMPLETE_PHASES
+    return (run_dir / "result.md").exists()
 
 # run 内の標準ファイル一覧（順序が workflow の順番に対応）
 STANDARD_FILES = [
@@ -246,13 +263,19 @@ class RunRepository:
         """
         run 内の標準ファイルの存在状況を返す。
         result.md があれば完了とみなせる。
+
+        NOTE: この判定はファイル存在（file-based）に基づいており、run_state.json を参照しない。
+        run_state との一貫性は result.md 書込み時に ActService が run_state を更新することで担保される。
         """
         run_dir = self._resolve_run_root(run_name, taxonomy)
         return {filename: (run_dir / filename).exists() for filename in STANDARD_FILES}
 
     def is_completed(self, run_name: str, taxonomy: Optional[str] = None) -> bool:
-        """result.md が存在する場合に完了とみなす。"""
-        return (self._resolve_run_root(run_name, taxonomy) / "result.md").exists()
+        """
+        run_state.json が存在する場合は current_phase が COMPLETE / TRANSCRIPT_RECOMMENDED なら完了。
+        run_state.json が存在しない場合（legacy / bootstrap 前）は result.md exists でフォールバック。
+        """
+        return _is_run_dir_completed(self._resolve_run_root(run_name, taxonomy))
 
     def validate_child_run_name(self, name: str) -> bool:
         """命名規則 NNNcN_case-key_topic に従っているかを確認する。"""
@@ -447,6 +470,8 @@ class RunRepository:
         """
         child run 内の標準ファイルの存在状況を返す。
         result.md があれば完了とみなせる。
+
+        NOTE: file-based 判定。run_state.json を参照しない（get_run_status と同様）。
         """
         child_dir = self.get_child_run_dir(parent_name, child_name, taxonomy)
         return {filename: (child_dir / filename).exists() for filename in STANDARD_FILES}
@@ -454,10 +479,11 @@ class RunRepository:
     def is_child_completed(
         self, parent_name: str, child_name: str, taxonomy: Optional[str] = None
     ) -> bool:
-        """result.md が存在する場合に child run を完了とみなす。"""
-        return self.get_child_file_path(
-            parent_name, child_name, "result.md", taxonomy
-        ).exists()
+        """
+        run_state.json が存在する場合は current_phase が COMPLETE / TRANSCRIPT_RECOMMENDED なら完了。
+        run_state.json が存在しない場合（legacy / bootstrap 前）は result.md exists でフォールバック。
+        """
+        return _is_run_dir_completed(self.get_child_run_dir(parent_name, child_name, taxonomy))
 
     def format_run_name(
         self, date: str, case_key: str, topic: str, seq: Optional[int] = None
