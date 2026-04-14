@@ -446,27 +446,6 @@ const formatElapsedMs = (elapsedMs: number) => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
-const buildJudgeAdvisoryComment = (recommendation: JudgeRecommendation) => {
-  const lines = [
-    `Judge advisory: ${recommendation.decision}${recommendation.suggested_action_label ? ` -> ${recommendation.suggested_action_label}` : ''}`,
-  ]
-  if (recommendation.review_verdict) {
-    lines.push(`Review verdict: ${recommendation.review_verdict}`)
-  }
-  lines.push(
-    `Severity counts: Critical=${recommendation.critical_count}, Major=${recommendation.major_count}, Minor=${recommendation.minor_count}`,
-  )
-  if (recommendation.suggested_return_phase) {
-    lines.push(`Suggested return phase: ${recommendation.suggested_return_phase}`)
-  }
-  if (recommendation.target_role || recommendation.target_execution_type) {
-    lines.push(
-      `Return target: role=${recommendation.target_role || 'n/a'}, execution=${recommendation.target_execution_type || 'n/a'}, provider=${recommendation.target_provider || 'n/a'}, model=${recommendation.target_model || 'n/a'}, specialist=${recommendation.target_specialist_code || 'n/a'}`,
-    )
-  }
-  lines.push(`Rationale: ${recommendation.rationale}`)
-  return lines.join('\n')
-}
 
 const PhaseBadge = ({ phase }: { phase: string }) => {
   const colors: Record<string, string> = {
@@ -3188,8 +3167,6 @@ export default function App() {
     activeJudgeRecommendation?.suggested_action_id
       ? detailActions.find((action) => action.id === activeJudgeRecommendation.suggested_action_id) ?? null
       : null
-  const suggestedJudgeComment =
-    activeJudgeRecommendation && suggestedJudgeAction ? buildJudgeAdvisoryComment(activeJudgeRecommendation) : ''
 
   useEffect(() => {
     if (phaseContextActions.length === 0) {
@@ -4100,68 +4077,6 @@ export default function App() {
                                             Mode: <span className="text-zinc-100">{activeJudgeRecommendation.target_specialist_mode}</span>
                                           </>
                                         ) : null}
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
-                                {suggestedJudgeAction && selectedTaxonomy && activeTargetName && suggestedJudgeAction.comment_artifact && (
-                                  <div className="mt-2 rounded border border-fuchsia-500/20 bg-black/20 p-2.5">
-                                    <div className="mb-2 flex items-center justify-between gap-2">
-                                      <div>
-                                        <div className="text-[10px] uppercase tracking-wide text-fuchsia-200">Suggested Return Comment</div>
-                                        <div className="mt-0.5 text-[10px] text-zinc-500">
-                                          Saves to {suggestedJudgeAction.comment_artifact} for {suggestedJudgeAction.label}.
-                                        </div>
-                                      </div>
-                                      <CopyButton text={suggestedJudgeComment} />
-                                    </div>
-                                    <textarea
-                                      value={rerunComments[suggestedJudgeAction.id] ?? ''}
-                                      onChange={(e) => {
-                                        const next = e.target.value
-                                        setRerunComments((current) => ({ ...current, [suggestedJudgeAction.id]: next }))
-                                        if (savedCommentByAction[suggestedJudgeAction.id] && savedCommentByAction[suggestedJudgeAction.id] !== next.trim()) {
-                                          setSavedCommentByAction((current) => {
-                                            const copy = { ...current }
-                                            delete copy[suggestedJudgeAction.id]
-                                            return copy
-                                          })
-                                        }
-                                      }}
-                                      className="min-h-28 w-full rounded border border-zinc-700 bg-zinc-950 p-2 text-[11px] text-zinc-200"
-                                      placeholder={`Feedback to append to ${suggestedJudgeAction.comment_artifact}`}
-                                    />
-                                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                                      <div className="text-[10px] text-zinc-500">
-                                        {savedCommentByAction[suggestedJudgeAction.id] === (rerunComments[suggestedJudgeAction.id] ?? '').trim() && (rerunComments[suggestedJudgeAction.id] ?? '').trim() !== ''
-                                          ? 'Saved to artifact.'
-                                          : 'Save before running the return action.'}
-                                      </div>
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setRerunComments((current) => ({ ...current, [suggestedJudgeAction.id]: suggestedJudgeComment }))
-                                            if (savedCommentByAction[suggestedJudgeAction.id] && savedCommentByAction[suggestedJudgeAction.id] !== suggestedJudgeComment.trim()) {
-                                              setSavedCommentByAction((current) => {
-                                                const copy = { ...current }
-                                                delete copy[suggestedJudgeAction.id]
-                                                return copy
-                                              })
-                                            }
-                                          }}
-                                          className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-[10px] font-semibold text-zinc-200 hover:bg-zinc-800"
-                                        >
-                                          Use Advisory Text
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => void saveRerunComment(suggestedJudgeAction, selectedTaxonomy, activeTargetName)}
-                                          disabled={savingActionId !== null || ((rerunComments[suggestedJudgeAction.id] ?? '').trim() === '') || savedCommentByAction[suggestedJudgeAction.id] === (rerunComments[suggestedJudgeAction.id] ?? '').trim()}
-                                          className="rounded border border-fuchsia-500/30 bg-fuchsia-500/15 px-3 py-1.5 text-[10px] font-semibold text-fuchsia-100 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
-                                        >
-                                          {savingActionId === suggestedJudgeAction.id ? 'Saving...' : 'Save Comment'}
-                                        </button>
                                       </div>
                                     </div>
                                   </div>
