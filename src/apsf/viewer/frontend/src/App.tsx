@@ -2407,6 +2407,19 @@ export default function App() {
     setSpecialistModalOpen(true)
   }
 
+  const openSpecialistSelectionForPhase = async (phase: string) => {
+    if (!selectedTaxonomy || !targetRun) return
+    const refreshed = await loadSpecialistCandidates(selectedTaxonomy, targetRun, phase)
+    if (refreshed) {
+      setSpecialistCandidates(refreshed)
+      setSpecialistModalSelectedCode(refreshed.current_code ?? '')
+    } else {
+      setSpecialistModalSelectedCode('')
+    }
+    setCreatedSpecialistResult(null)
+    setSpecialistModalOpen(true)
+  }
+
   const makeRunKey = (taxonomy: string, runName: string) => `${taxonomy}:${runName}`
   const isRunExecuting = (taxonomy: string, runName: string) => executingRuns[makeRunKey(taxonomy, runName)] !== undefined
   const executingStateForRun = (taxonomy: string, runName: string) => executingRuns[makeRunKey(taxonomy, runName)] ?? null
@@ -4290,26 +4303,30 @@ export default function App() {
                                   {activeSpecialist.has_gap ? 'Gap detected' : 'No gap'}
                                 </div>
                               </div>
-                              {specialistCandidates && selectedTaxonomy && targetRun && (
+                              {selectedTaxonomy && targetRun && (
                                 <div className="space-y-2 rounded border border-amber-500/20 bg-amber-500/5 p-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => void openSpecialistSelectionModal(activeSpecialist.specialist_code || specialistCandidates.current_code || '')}
-                                    disabled={isActiveRunBusy}
-                                    className="w-full rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/20 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
-                                  >
-                                    {activePhase === 'IMPROVE_NEEDED' ? `Select Return ${specialistCandidates.role} Specialist` : 'Select Specialist'}
-                                  </button>
+                                  <div className="text-[10px] uppercase tracking-wide text-zinc-500">Change Assignment</div>
+                                  <div className="flex gap-1.5">
+                                    {(['Planner', 'Builder', 'Critic'] as const).map((role) => {
+                                      const phase = role === 'Planner' ? 'PLAN_NEEDED' : role === 'Builder' ? 'BUILD_NEEDED' : 'REVIEW_NEEDED'
+                                      return (
+                                        <button
+                                          key={role}
+                                          type="button"
+                                          onClick={() => void openSpecialistSelectionForPhase(phase)}
+                                          disabled={isActiveRunBusy}
+                                          className="flex-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/20 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+                                        >
+                                          {role}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
                                   {detail && targetRun !== detail.name && (
                                     <div className="rounded border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-[10px] text-indigo-100">
                                       Targeting child run: <span className="font-mono">{targetRun}</span>
                                     </div>
                                   )}
-                                  <div className="text-[10px] text-zinc-500">
-                                    {activePhase === 'IMPROVE_NEEDED'
-                                      ? `Inspect and update the ${specialistCandidates.role} specialist that will be used after the Judge returns this run to ${specialistCandidates.phase}.`
-                                      : 'Inspect the current library, assign an existing specialist, use generic explicitly, or create a new specialist asset.'}
-                                  </div>
                                   {isActiveRunBusy && (
                                     <div className="rounded border border-yellow-500/20 bg-yellow-500/5 px-3 py-2 text-[10px] text-yellow-100">
                                       Specialist changes are blocked while this run is executing.
