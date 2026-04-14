@@ -77,3 +77,11 @@ viewer.db
 # ----- Local probe artifacts --------------------------------
 agent-os-investment-check.png
 jquants_*.json
+
+# ----- UI smoke test screenshots ----------------------------
+smoke-*.png
+ui-*.png
+
+# ----- Act subprocess temp files ----------------------------
+.tmp_act_stdout.txt
+.tmp_act_stderr.txt
