@@ -5257,6 +5257,15 @@ async def get_run_detail(taxonomy: str, run_name: str):
 
 frontend_dist = Path(__file__).parent / "frontend" / "dist"
 if frontend_dist.exists():
+    from fastapi.responses import FileResponse
+
+    @app.get("/", include_in_schema=False)
+    async def serve_index():
+        return FileResponse(
+            str(frontend_dist / "index.html"),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
     app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="static")
 else:
 
