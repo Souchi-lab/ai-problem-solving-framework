@@ -79,6 +79,7 @@ PTYPE_TO_SPECIALIST: dict[str, str] = {
     "P-13": "framework/agents/planners/reconstruction-planner.md",
     "P-19": "framework/agents/planners/verification-planning-planner-1775385814.md",
     "P-20": "framework/agents/planners/data-contract-planner.md",
+    "P-21": "framework/agents/planners/auto-judge-loop-planner.md",
 
 }
 

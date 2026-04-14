@@ -19,6 +19,24 @@ This should be handled as a reconstruction task, not as endless local patching.
 
 ---
 
+## Current Status
+
+Status update after `runs/work/2026-04-08-002_work_fw-backend-reconstruction` closed:
+
+- `C1` Transition ownership completed in `002c1_work_transition-ownership`; `TransitionService` is now the canonical phase-transition boundary.
+- `C2` Manifest/state consistency completed in `002c2_work_manifest-state-consistency`; `ArtifactWriter` established the canonical phase-artifact write path.
+- `C3` Parent/child run model completed in `002c3_work_parent-child-run-model`; child-run creation, dependency injection, and Viewer child evidence were established.
+- `C5` Blocker ownership canonicalization completed in `002c5_work_blocker-ownership-canonicalization`; consumer paths now use canonical ownership state instead of stale prose heuristics.
+- `C6` Auto-judge improve loop completed in `002c6_work_auto-judge-improve-loop`; review completion now writes canonical advisory state and auto-loop reroutes `Return to Build` / `Return to Plan` without extra human intervention.
+- `C7` Artifact encoding normalization completed in `002c7_work_artifact-encoding-normalization`; UTF-8 is now the canonical durable text-artifact policy with scoped compatibility handling.
+
+Current overall judgment:
+
+- backend reconstruction phase: complete
+- Viewer responsibility reduction and later policy work: split to follow-up runs
+
+---
+
 ## Why Reconstruct
 
 The recent incidents were not isolated UI bugs. They came from responsibility drift across the stack.
@@ -84,8 +102,18 @@ The system needs a cleaner model for:
 - execution target selection
 - activity/history scope
 - child-run dependency visibility
+- child-run creation from planner/judge decisions
 
 This is where the related note below becomes important.
+
+This is not optional. The framework already has child-run directory creation logic in the repository layer, but it is not exposed cleanly through the normal CLI/Viewer workflow. As a result, planners can describe child runs but operators still have to create them manually.
+
+Required reconstruction outcome:
+
+- child-run creation becomes a first-class workflow action
+- Planner / Goal-owner decisions can produce a concrete child run, not just a description of one
+- the system can carry title, goal, scope, acceptance criteria, and expected files into the new child run at creation time
+- manual folder creation should stop being the normal operational path
 
 ### 4. Viewer responsibility reduction
 
@@ -166,6 +194,7 @@ Expected reconstruction outcome:
 - child dependencies are represented explicitly in the canonical backend model
 - builder/planner/critic prompts derive from that model instead of ad-hoc prompt composition
 - Viewer can show dependency context without special-case patching
+- parent-run decisions can directly spawn the required child run when the workflow calls for decomposition
 
 ---
 
@@ -179,7 +208,8 @@ Expected reconstruction outcome:
 6. Revisit child-run dependency injection on top of the new model.
 7. Define canonical CLI backend selection precedence across config and run-local assignment.
 8. Define role/phase-specific Codex adoption policy and fallback rules.
-9. Clean up Viewer UX and terminology after the backend model is stable.
+9. Add first-class child-run creation to CLI/Viewer workflow.
+10. Clean up Viewer UX and terminology after the backend model is stable.
 
 ---
 
@@ -194,3 +224,22 @@ The frontend should be cleaned up, but only after the transition/state model is 
 ## Start Condition
 
 Begin this work after `2026-04-04-001_investment-project_v0-1` is finished.
+
+---
+
+## Unstarted / Follow-Up Topics
+
+The following memo topics remain follow-up scope after backend reconstruction completed:
+
+- `C4` Viewer responsibility reduction
+  - API should return canonical resolved state
+  - Viewer should stop inferring or repairing workflow state locally
+  - labels and actions should be aligned to workflow concepts rather than implementation vocabulary
+
+- `Topic #5` CLI backend selection precedence
+  - canonical resolution order is still needed across Viewer config, run-local `execution-assignment.md`, and wrapper backend hints
+  - stale run-local planning text should not override current operator intent by accident
+
+- `Topic #6` Codex adoption boundary / phase policy
+  - phase-by-phase backend policy still needs to be documented centrally
+  - fallback rules should be explicit instead of being discovered operationally

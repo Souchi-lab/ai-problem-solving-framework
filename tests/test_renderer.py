@@ -21,3 +21,5 @@ def test_render_review_prompt_includes_specialist_sections() -> None:
     assert "Critic Specialist Selection" in prompt
     assert "Critic Specialist Guidance" in prompt
     assert "Return ONLY the raw Markdown content for review.md." in prompt
+    assert "```apsf-judge-advisory```" in prompt
+    assert "exactly one" in prompt

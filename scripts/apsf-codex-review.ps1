@@ -119,6 +119,14 @@ $assignmentProvider = ($assignmentLines | Where-Object { $_ -match "^provider=(.
 $assignmentModel = ($assignmentLines | Where-Object { $_ -match "^model=(.+)" } | Select-Object -First 1) -replace "^model=", ""
 $assignmentHuman = ($assignmentLines | Where-Object { $_ -eq "human=true" } | Measure-Object).Count -gt 0
 
+function Test-CodexModelOverride {
+    param([string]$ModelName)
+    if ([string]::IsNullOrWhiteSpace($ModelName)) {
+        return $false
+    }
+    return $ModelName -match '^[A-Za-z0-9._:-]+$'
+}
+
 if ($assignmentHuman) {
     Write-Host "[Stop] model-assignment.md: Critic is human-assigned." -ForegroundColor Yellow
     Write-Host "       Keep REVIEW_NEEDED on the human/provider path for this run." -ForegroundColor DarkGray
@@ -127,6 +135,11 @@ if ($assignmentHuman) {
 
 if (-not [string]::IsNullOrWhiteSpace($assignmentProvider) -and $assignmentProvider -ne "unset" -and $assignmentProvider -ne "openai") {
     Write-Host "[Warn] model-assignment.md specifies provider=$assignmentProvider, but codex-cli bridge is OpenAI/Codex-oriented." -ForegroundColor Yellow
+    Write-Host "       Proceeding with Codex CLI default model/profile." -ForegroundColor DarkGray
+    $assignmentModel = ""
+}
+elseif (-not (Test-CodexModelOverride $assignmentModel) -and -not [string]::IsNullOrWhiteSpace($assignmentModel)) {
+    Write-Host "[Warn] model-assignment.md model='$assignmentModel' is not a Codex CLI model id." -ForegroundColor Yellow
     Write-Host "       Proceeding with Codex CLI default model/profile." -ForegroundColor DarkGray
     $assignmentModel = ""
 }

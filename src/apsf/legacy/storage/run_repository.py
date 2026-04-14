@@ -235,7 +235,7 @@ class RunRepository:
             tax_dir = self._runs_dir / taxonomy
             if not tax_dir.exists():
                 return []
-            return [d.name for d in sorted(tax_dir.iterdir()) if d.is_dir()]
+            return [d.name for d in sorted(tax_dir.iterdir()) if d.is_dir() and d.name != "_archive"]
         # taxonomy=None: 全横断（fw-improvement → work → legacy）
         result: list[str] = []
         seen: set[str] = set()
@@ -250,6 +250,7 @@ class RunRepository:
             if (
                 d.is_dir()
                 and d.name != "_template"
+                and d.name != "_archive"
                 and d.name not in _TAXONOMY_DIRS
                 and d.name not in seen
             ):
@@ -357,7 +358,7 @@ class RunRepository:
             if not tax_dir.exists():
                 return []
             for top in sorted(tax_dir.iterdir()):
-                if not top.is_dir():
+                if not top.is_dir() or top.name == "_archive":
                     continue
                 result.append(top.name)
                 for child in sorted(top.iterdir()):
@@ -372,18 +373,19 @@ class RunRepository:
             if not tax_dir.exists():
                 continue
             for top in sorted(tax_dir.iterdir()):
-                if not top.is_dir() or top.name in seen:
+                if not top.is_dir() or top.name == "_archive" or top.name in seen:
                     continue
                 seen.add(top.name)
                 result.append(top.name)
                 for child in sorted(top.iterdir()):
                     if child.is_dir() and self.validate_child_run_name(child.name):
                         result.append(f"{top.name}/{child.name}")
-        # legacy: runs/ direct children（_template と taxonomy dirs を除く）
+        # legacy: runs/ direct children（_template / _archive と taxonomy dirs を除く）
         for top in sorted(self._runs_dir.iterdir()):
             if (
                 not top.is_dir()
                 or top.name == "_template"
+                or top.name == "_archive"
                 or top.name in _TAXONOMY_DIRS
                 or top.name in seen
             ):

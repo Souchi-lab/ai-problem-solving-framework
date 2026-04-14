@@ -267,6 +267,67 @@ function Read-RunFile {
     return $null
 }
 
+function Inject-DependencyPromptContext {
+    param(
+        [string]$ProjectRoot,
+        [string]$RunDir,
+        [string]$PromptText
+    )
+
+    $inputPath = [System.IO.Path]::GetTempFileName()
+    $outputPath = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllText($inputPath, $PromptText, [System.Text.Encoding]::UTF8)
+        @"
+import sys
+from pathlib import Path
+from apsf.core.dependencies.run_dependencies import (
+    ArtifactNotFoundError,
+    DependencyNotFoundError,
+    IncompleteDependencyError,
+    inject_dependency_context,
+)
+
+project_root = Path(r"$ProjectRoot")
+run_dir = Path(r"$RunDir")
+input_path = Path(r"$inputPath")
+output_path = Path(r"$outputPath")
+prompt_text = input_path.read_text(encoding="utf-8")
+
+try:
+    result = inject_dependency_context(
+        project_root=project_root,
+        run_dir=run_dir,
+        prompt_text=prompt_text,
+    )
+except IncompleteDependencyError as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(3)
+except (DependencyNotFoundError, ArtifactNotFoundError) as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(1)
+
+output_path.write_text(result, encoding="utf-8")
+"@ | python -
+        $injectExitCode = $LASTEXITCODE
+        if ($injectExitCode -eq 0) {
+            return Get-Content -LiteralPath $outputPath -Raw -Encoding UTF8
+        }
+        if ($injectExitCode -eq 3) {
+            Write-Host "[STOP] Build blocked by incomplete dependency." -ForegroundColor Yellow
+            exit 3
+        }
+        Write-Host "[Error] Dependency prompt injection failed." -ForegroundColor Red
+        exit 1
+    } finally {
+        foreach ($path in @($inputPath, $outputPath)) {
+            if ($path -and (Test-Path -LiteralPath $path)) {
+                Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 $planPath = Join-Path $runPath "plan.md"
 
 if (-not [string]::IsNullOrWhiteSpace($PromptFile)) {
@@ -368,6 +429,8 @@ $buildReviewContent
     if ($specialistContent)    { $inputsLabel += " + specialist=$specialistCode" }
     Write-Host "[APSF] inputs:    $inputsLabel" -ForegroundColor Cyan
 }
+
+$assembledPrompt = Inject-DependencyPromptContext -ProjectRoot $projectRoot -RunDir $runPath -PromptText $assembledPrompt
 
 function Get-MeaningfulOutputTail {
     param(
@@ -489,18 +552,12 @@ function Get-HumanBlockerInfo {
 import json
 import sys
 from pathlib import Path
-from apsf.legacy.orchestration.rebuild_feedback import detect_human_owned_blocker, iter_build_blocker_sources
+from apsf.legacy.orchestration.rebuild_feedback import get_build_gate_decision
 
 sys.stdout.reconfigure(encoding="utf-8")
 
 run_dir = Path(r"$RunDir")
-for name, text in iter_build_blocker_sources(run_dir):
-    blocker = detect_human_owned_blocker(text)
-    if blocker is not None:
-        print(json.dumps({"source": name, "summary": blocker["summary"], "actions": blocker["actions"]}, ensure_ascii=False))
-        raise SystemExit(0)
-
-print("")
+print(json.dumps(get_build_gate_decision(run_dir), ensure_ascii=False))
 "@ | python -
 
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($payload)) {
@@ -538,15 +595,39 @@ Write-Host ""
 $humanBlockerJson = Get-HumanBlockerInfo -RunDir $runPath
 if (-not [string]::IsNullOrWhiteSpace($humanBlockerJson)) {
     $humanBlocker = $humanBlockerJson | ConvertFrom-Json
-    Write-Host "[STOP] Human-owned blocker detected before build." -ForegroundColor Yellow
-    Write-Host ("       source: {0}" -f $humanBlocker.source) -ForegroundColor DarkGray
-    Write-Host ("       {0}" -f $humanBlocker.summary) -ForegroundColor DarkGray
-    foreach ($action in @($humanBlocker.actions)) {
-        Write-Host ("       human action: {0}" -f $action) -ForegroundColor DarkGray
+    $gateStatus = [string]$humanBlocker.status
+    if ($gateStatus -eq "HUMAN") {
+        Write-Host "[STOP] Human-owned blocker detected before build." -ForegroundColor Yellow
+        Write-Host ("       source: {0}" -f $humanBlocker.source) -ForegroundColor DarkGray
+        Write-Host ("       {0}" -f $humanBlocker.summary) -ForegroundColor DarkGray
+        foreach ($action in @($humanBlocker.actions)) {
+            Write-Host ("       human action: {0}" -f $action) -ForegroundColor DarkGray
+        }
+        Write-Host ""
+        Write-Host "       Builder rerun skipped to avoid a no-op rebuild." -ForegroundColor DarkGray
+        exit 3
     }
-    Write-Host ""
-    Write-Host "       Builder rerun skipped to avoid a no-op rebuild." -ForegroundColor DarkGray
-    exit 3
+    if ($gateStatus -in @("UNRECORDED", "CORRUPT")) {
+        Write-Host "[STOP] Canonical blocker ownership is invalid for build gating." -ForegroundColor Yellow
+        Write-Host ("       status: {0}" -f $gateStatus) -ForegroundColor DarkGray
+        Write-Host ("       source: {0}" -f $humanBlocker.source) -ForegroundColor DarkGray
+        if (-not [string]::IsNullOrWhiteSpace([string]$humanBlocker.summary)) {
+            Write-Host ("       {0}" -f $humanBlocker.summary) -ForegroundColor DarkGray
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$humanBlocker.detail)) {
+            Write-Host ("       detail: {0}" -f $humanBlocker.detail) -ForegroundColor DarkGray
+        }
+        Write-Host ""
+        Write-Host "       Build gate failed closed. Record or repair transition_outcome.json before rerunning Builder." -ForegroundColor DarkGray
+        exit 4
+    }
+    if ($gateStatus -eq "SUPERSEDED") {
+        Write-Host "[Gate] Canonical blocker ownership is SUPERSEDED for the current phase; proceeding." -ForegroundColor DarkGray
+        if (-not [string]::IsNullOrWhiteSpace([string]$humanBlocker.detail)) {
+            Write-Host ("       detail: {0}" -f $humanBlocker.detail) -ForegroundColor DarkGray
+        }
+        Write-Host ""
+    }
 }
 
 $claudeCmd = Get-Command "claude" -ErrorAction Stop

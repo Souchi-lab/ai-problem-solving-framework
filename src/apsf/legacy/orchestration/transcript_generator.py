@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ...core.storage.artifact_repository import ArtifactRepository
+from ...core.storage.text_artifact_codec import read_text_artifact
 
 
 # transcript に含めるファイルの順序定義
@@ -90,7 +91,7 @@ class TranscriptGenerator:
             if not path.exists():
                 continue
 
-            content = path.read_text(encoding="utf-8").strip()
+            content = read_text_artifact(path).strip()
             if not content:
                 continue
 

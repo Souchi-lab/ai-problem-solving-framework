@@ -44,6 +44,7 @@ from ..orchestration.phase_detector import (
 )
 from ..prompts.renderer import render_build_prompt, render_plan_prompt, render_review_prompt
 from ...core.providers.base import BaseProvider, GenerateRequest, ProviderError
+from ...core.artifact_writer import ArtifactWriter
 from ...core.storage.artifact_repository import ArtifactRepository
 
 
@@ -175,9 +176,6 @@ class ActService:
                 and advisory_info.phase != canonical_phase
             ):
                 canonical_phase = advisory_info.phase
-                run_state.current_phase = canonical_phase.value
-                run_state.current_owner = _phase_to_owner(canonical_phase)
-                run_state.phase_status = PhaseStatus.PENDING.value
                 info = advisory_info
                 if not dry_run:
                     TransitionService().transition(
@@ -189,6 +187,13 @@ class ActService:
                     refreshed_state = state_repo.load()
                     if refreshed_state is not None:
                         run_state = refreshed_state
+                else:
+                    run_state = dataclasses.replace(
+                        run_state,
+                        current_phase=canonical_phase.value,
+                        current_owner=_phase_to_owner(canonical_phase),
+                        phase_status=PhaseStatus.PENDING.value,
+                    )
         else:
             # Bootstrap: run_state.json なし → advisory detector で初期 run_state を生成
             info = detector.detect_advisory()
@@ -267,8 +272,11 @@ class ActService:
                     reason="consistency gate failure",
                     last_error=_consistency_failures[0].reason,
                 )
-                run_state.phase_status = PhaseStatus.FAILED.value
-                run_state.last_error = _consistency_failures[0].reason
+                run_state = dataclasses.replace(
+                    run_state,
+                    phase_status=PhaseStatus.FAILED.value,
+                    last_error=_consistency_failures[0].reason,
+                )
                 raise ActError(f"consistency gate failed: {_consistency_failures[0].reason}")
         else:
             if not force_reason:
@@ -289,7 +297,12 @@ class ActService:
             )
 
         # ── 上書き保護 ───────────────────────────────────────────────────────
-        if not force and target_file != "(none)" and detector._has_any_content(target_file):
+        if (
+            not dry_run
+            and not force
+            and target_file != "(none)"
+            and detector._has_any_content(target_file)
+        ):
             return ActResult(
                 phase=info.phase,
                 mode="already_filled",
@@ -321,7 +334,10 @@ class ActService:
             actor="system",
             reason="LLM generation in progress",
         )
-        run_state.phase_status = PhaseStatus.IN_PROGRESS.value
+        run_state = dataclasses.replace(
+            run_state,
+            phase_status=PhaseStatus.IN_PROGRESS.value,
+        )
 
         # ── session event: act_started ────────────────────────────────────────
         from ...core.session.session_event import make_act_started_event
@@ -405,9 +421,16 @@ class ActService:
         # ── 保存 ─────────────────────────────────────────────────────────────
         from ..cli.role_rules import role_from_phase as _role_name_from_phase
         writing_role = _role_name_from_phase(info.phase.value)
-        artifact_repo = ArtifactRepository(writing_role=writing_role, run_dir=run_dir)
         target_path = run_dir / target_file
-        artifact_repo.write(target_path, content)
+        if writing_role is None:
+            ArtifactRepository().write(target_path, content)
+        else:
+            ArtifactWriter().write(
+                path=target_path,
+                content=content,
+                writing_role=writing_role,
+                run_dir=run_dir,
+            )
 
         # ── Gate 評価 ─────────────────────────────────────────────────────────
         gate_results = GateService().evaluate_all(run_dir)

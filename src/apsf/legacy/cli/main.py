@@ -34,6 +34,7 @@ from typing import Optional
 
 import typer
 
+from ...core.artifact_writer import ArtifactWriter
 from ...core.storage.artifact_repository import ArtifactRepository
 
 
@@ -160,6 +161,41 @@ def init_run(
     except (FileExistsError, FileNotFoundError) as e:
         typer.echo(f"[ERROR] {e}", err=True)
         raise typer.Exit(1)
+
+
+@app.command("init-child-run")
+def init_child_run_cmd(
+    run_id: str = typer.Option(..., "--run-id", help="Child run id, e.g. 002c3_case_topic"),
+    parent_run: str = typer.Option(..., "--parent-run", help="Parent top-level run name"),
+    taxonomy: str = typer.Option(..., "--taxonomy", help="Parent run taxonomy"),
+    title: str = typer.Option(..., "--title", help="Child run title"),
+    goal: str = typer.Option(..., "--goal", help="Goal text to seed goal.md"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing child run if present"),
+) -> None:
+    """Create a child run under an existing parent run and initialize canonical state."""
+    from ..config.settings import get_settings
+    from ..storage.run_repository import RunRepository
+    from ...core.runs.child_run_initializer import initialize_child_run
+
+    settings = get_settings()
+    repo = RunRepository(runs_dir=settings.runs_dir, template_dir=settings.template_dir)
+
+    try:
+        child_dir = initialize_child_run(
+            repo=repo,
+            parent_run=parent_run,
+            child_run=run_id,
+            taxonomy=taxonomy,
+            title=title,
+            goal_text=goal,
+            force=force,
+        )
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        typer.echo(f"[ERROR] {exc}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"[OK] Child run created: {child_dir}")
+    typer.echo(f"Path: {child_dir}")
 
 
 # ── init-followup テンプレート定数 ──────────────────────────────────────────
@@ -1112,43 +1148,43 @@ def next_cmd(
     advisory_info = detector.detect_advisory()
 
     if existing_state is not None:
-        # Canonical phase from run_state.json
+        # Canonical phase from run_state.json is the source of truth.
+        # When the advisory phase is *ahead* of canonical (human completed work but
+        # the phase was not advanced), try to sync forward. If that save fails, show
+        # advisory so the user can still proceed. When advisory is *behind* canonical
+        # (data inconsistency), keep canonical to avoid unintended regression.
         try:
             canonical_phase = Phase[existing_state.current_phase]
         except KeyError:
             canonical_phase = advisory_info.phase
-        if (
-            canonical_phase != advisory_info.phase
-            and str(existing_state.phase_status).strip().lower() != "in_progress"
-        ):
-            owner_map = {
-                Phase.PLAN_NEEDED: "Planner",
-                Phase.BUILD_NEEDED: "Builder",
-                Phase.REVIEW_NEEDED: "Critic",
-                Phase.IMPROVE_NEEDED: "Human",
-                Phase.RESULT_NEEDED: "Human",
-                Phase.TRANSCRIPT_RECOMMENDED: "Human",
-                Phase.COMPLETE: "(none)",
-            }
-            try:
-                from ...core.state.transition_service import TransitionService
-                TransitionService().transition(
-                    run_dir,
-                    to_phase=advisory_info.phase.value,
-                    actor="system",
-                    reason="apsf next advisory sync: canonical phase diverged from advisory",
-                )
-                canonical_phase = advisory_info.phase
+        if canonical_phase != advisory_info.phase:
+            from ...core.state.transition_service import VALID_TRANSITIONS
+            advisory_is_forward = (
+                (canonical_phase.value, advisory_info.phase.value) in VALID_TRANSITIONS
+            )
+            if advisory_is_forward and str(existing_state.phase_status).strip().lower() != "in_progress":
+                try:
+                    from ...core.state.transition_service import TransitionService
+                    TransitionService().transition(
+                        run_dir,
+                        to_phase=advisory_info.phase.value,
+                        actor="system",
+                        reason="apsf next advisory sync: canonical phase behind advisory",
+                    )
+                    canonical_phase = advisory_info.phase
+                    info = dataclasses.replace(advisory_info, phase=canonical_phase)
+                    phase_source = "[canonical]"
+                except Exception as exc:
+                    info = advisory_info
+                    phase_source = "[advisory]"
+                    typer.echo(
+                        "[Warn] Failed to refresh run_state.json from advisory phase; "
+                        f"showing advisory phase instead. ({exc})",
+                        err=True,
+                    )
+            else:
                 info = dataclasses.replace(advisory_info, phase=canonical_phase)
                 phase_source = "[canonical]"
-            except Exception as exc:
-                info = advisory_info
-                phase_source = "[advisory]"
-                typer.echo(
-                    "[Warn] Failed to refresh run_state.json from advisory phase; "
-                    f"showing advisory phase instead. ({exc})",
-                    err=True,
-                )
         else:
             info = dataclasses.replace(advisory_info, phase=canonical_phase)
             phase_source = "[canonical]"
@@ -1534,6 +1570,7 @@ def write_phase_cmd(
 
     raw_content = read_stdin_utf8()
     content = _sanitize_phase_input(raw_content)
+    review_advisory = None
 
     # ── Validation: empty / template-only input ──────────────────────────────
     if not PhaseDetector.is_meaningful_text(content):
@@ -1559,29 +1596,69 @@ def write_phase_cmd(
                 typer.echo(f"[Warn] {violation.message}", err=True)
                 typer.echo(violation.override_hint, err=True)
 
+    if target_file == "review.md":
+        from ...core.advisory import parse_review_judge_advisory
+
+        try:
+            review_advisory = parse_review_judge_advisory(content)
+        except ValueError as exc:
+            typer.echo(f"[Error] {exc}", err=True)
+            raise typer.Exit(1)
+
     # ── Save ─────────────────────────────────────────────────────────────────
-    ArtifactRepository(writing_role=writing_role).write(target_path, content)
+    if writing_role:
+        ArtifactWriter().write(
+            path=target_path,
+            content=content,
+            writing_role=writing_role,
+            run_dir=run_dir,
+        )
+    else:
+        ArtifactRepository().write(target_path, content)
 
     # ── Canonical state sync after write-phase ───────────────────────────────
     # write-phase is often used as the sink for `apsf act --print-prompt | ... | apsf write-phase --stdin`.
     # Without a state sync here, the artifact is saved but run_state.json can remain on the old phase until
     # a later `apsf next` call repairs it. That leaves the Viewer showing stale actions such as "Run Critic"
     # immediately after review.md was already written.
-    try:
-        from ...core.state.transition_service import TransitionService
+    from ...core.advisory import write_canonical_judge_advisory
+    from ...core.state.transition_service import TransitionService
 
-        next_phase = _next_phase_after_write(info.phase)
-        TransitionService().transition(
-            run_dir,
-            to_phase=next_phase.value,
-            actor="system",
-            reason="write-phase canonical state sync",
-        )
-    except Exception as exc:
-        typer.echo(
-            f"[Warn] Saved {target_file}, but failed to sync run_state.json: {exc}",
-            err=True,
-        )
+    next_phase = _next_phase_after_write(info.phase)
+    transition_result = TransitionService().transition(
+        run_dir,
+        to_phase=next_phase.value,
+        actor="system",
+        reason="write-phase canonical state sync",
+    )
+
+    # ── Advisory stub on IMPROVE_NEEDED entry ────────────────────────────────
+    # Establish freshness_token for the new IMPROVE_NEEDED cycle so the auto-loop
+    # can detect stale advisory from a prior cycle.
+    if transition_result.success and next_phase.value == "IMPROVE_NEEDED" and review_advisory is not None:
+        try:
+            from ...core.state.run_state_repository import RunStateRepository
+            from ..orchestration.rebuild_feedback import get_build_gate_decision
+
+            state = RunStateRepository(run_dir).load()
+            entered_at = str(getattr(state, "phase_entered_at", "") or "").strip() if state else ""
+            blocker_decision = get_build_gate_decision(run_dir)
+            write_canonical_judge_advisory(
+                run_dir,
+                recommendation=str(review_advisory["recommendation"]),
+                human_owned_blocker=bool(review_advisory["human_owned_blocker"]),
+                phase=next_phase.value,
+                source="write-phase review completion",
+                ownership_status=str(blocker_decision.get("status") or "").strip() or None,
+                ownership_detail=str(blocker_decision.get("detail") or "").strip() or None,
+                freshness_token=entered_at or None,
+            )
+        except Exception:
+            typer.echo(
+                "[Error] review.md saved but canonical judge advisory could not be written.",
+                err=True,
+            )
+            raise
 
     # ── Force audit ──────────────────────────────────────────────────────────
     if force:
@@ -2031,7 +2108,7 @@ def build_cmd(
     """
     from ..config.settings import get_settings
     from ..orchestration.phase_detector import PhaseDetector
-    from ..orchestration.rebuild_feedback import detect_human_owned_blocker, latest_review_artifact
+    from ..orchestration.rebuild_feedback import get_build_gate_decision
     from ..storage.run_repository import RunRepository
 
     settings = get_settings()
@@ -2069,28 +2146,40 @@ def build_cmd(
     typer.echo(f"    .\\scripts\\apsf-claude-build.ps1 $run -DryRun")
     typer.echo(f"")
 
-    sources: list[tuple[str, Path]] = []
-    review_path = latest_review_artifact(run_dir)
-    if review_path is not None:
-        sources.append((review_path.name, review_path))
-    build_review_path = run_dir / "build_review.md"
-    if build_review_path.exists():
-        sources.append((build_review_path.name, build_review_path))
+    gate = get_build_gate_decision(run_dir)
+    gate_status = str(gate.get("status") or "")
+    gate_source = str(gate.get("source") or "") or "transition_outcome.json"
+    gate_summary = str(gate.get("summary") or "").strip()
+    gate_detail = str(gate.get("detail") or "").strip()
+    gate_actions = [str(action) for action in gate.get("actions", [])]
 
-    for source_name, path in sources:
-        text = path.read_text(encoding="utf-8").strip()
-        blocker = detect_human_owned_blocker(text) if text else None
-        if blocker is None:
-            continue
+    if gate_status == "HUMAN":
         typer.echo("[Human Blocker]")
-        typer.echo(f"  source: {source_name}")
-        typer.echo(f"  {blocker['summary']}")
-        for action in list(blocker.get("actions", []))[:3]:
+        typer.echo(f"  source: {gate_source}")
+        typer.echo(f"  {gate_summary}")
+        for action in gate_actions[:3]:
             typer.echo(f"  - {action}")
         typer.echo("")
         typer.echo("  Wrapper builds will stop until this manual gate is resolved.")
         typer.echo("")
-        break
+    elif gate_status in {"UNRECORDED", "CORRUPT"}:
+        typer.echo("[Build Gate Error]")
+        typer.echo(f"  status: {gate_status}")
+        typer.echo(f"  source: {gate_source}")
+        if gate_summary:
+            typer.echo(f"  {gate_summary}")
+        if gate_detail:
+            typer.echo(f"  detail: {gate_detail}")
+        typer.echo("")
+        typer.echo("  Wrapper builds fail closed until canonical blocker ownership is recorded and valid.")
+        typer.echo("")
+    elif gate_status == "SUPERSEDED":
+        typer.echo("[Build Gate]")
+        typer.echo("  status: SUPERSEDED")
+        typer.echo("  Canonical blocker ownership record is stale for the current phase; intended policy is proceed.")
+        if gate_detail:
+            typer.echo(f"  detail: {gate_detail}")
+        typer.echo("")
 
     if not build_script.exists():
         typer.echo(f"[Warn] Build script not found: {build_script}", err=True)
@@ -2101,7 +2190,7 @@ def build_cmd(
     typer.echo(f"  claude --tools Bash,Edit,Glob,Grep,Read,Write")
     typer.echo(f"")
     typer.echo(f"[Note] Builder writes files directly to disk.")
-    typer.echo(f"       build.md is an optional log artifact the Builder should also create.")
+    typer.echo(f"       build.md is the required durable build record.")
     typer.echo(f"{sep}\n")
 
 

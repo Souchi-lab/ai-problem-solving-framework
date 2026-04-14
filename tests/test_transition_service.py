@@ -4,6 +4,14 @@ from pathlib import Path
 
 import pytest
 
+from apsf.core.ownership import (
+    BlockerOwnership,
+    TransitionType,
+    get_transition_outcome,
+    write_transition_outcome,
+    TransitionOutcomeMissing,
+    TransitionOutcomeRecord,
+)
 from apsf.core.state.run_state import PhaseStatus
 from apsf.core.state.run_state_repository import RunStateRepository
 from apsf.core.state.transition_service import TransitionError, TransitionService
@@ -126,3 +134,68 @@ def test_transition_allows_rerun_actor_to_return_to_build_needed(tmp_path: Path)
     assert state.current_phase == "BUILD_NEEDED"
     assert state.phase_status == PhaseStatus.PENDING.value
     assert state.current_owner == "Builder"
+
+    outcome = get_transition_outcome(tmp_path)
+    assert outcome.run_id == tmp_path.name
+    assert outcome.transition_type == TransitionType.RERUN_REQUESTED
+    assert outcome.blocker_owner == BlockerOwnership.SYSTEM
+    assert outcome.source_phase == "RESULT_NEEDED"
+    assert outcome.target_phase == "BUILD_NEEDED"
+
+
+def test_transition_writes_system_owned_record_for_judge_return_to_build(tmp_path: Path) -> None:
+    service = TransitionService()
+    service.bootstrap(
+        tmp_path,
+        run_id=tmp_path.name,
+        initial_phase="REVIEW_NEEDED",
+        actor="system",
+        reason="bootstrap test",
+    )
+
+    result = service.transition(
+        tmp_path,
+        to_phase="BUILD_NEEDED",
+        actor="Judge",
+        reason="return to build",
+    )
+
+    assert result.success is True
+    outcome = get_transition_outcome(tmp_path)
+    assert outcome.transition_type == TransitionType.BUILD_NEEDED
+    assert outcome.blocker_owner == BlockerOwnership.SYSTEM
+    assert outcome.source_phase == "REVIEW_NEEDED"
+    assert outcome.target_phase == "BUILD_NEEDED"
+
+
+def test_transition_clears_stale_human_blocked_record_when_phase_advances(tmp_path: Path) -> None:
+    service = TransitionService()
+    service.bootstrap(
+        tmp_path,
+        run_id=tmp_path.name,
+        initial_phase="IMPROVE_NEEDED",
+        actor="system",
+        reason="bootstrap test",
+    )
+    write_transition_outcome(
+        tmp_path,
+        TransitionOutcomeRecord(
+            run_id=tmp_path.name,
+            transition_type=TransitionType.HUMAN_BLOCKED,
+            transitioned_at="2026-04-09T00:00:00+00:00",
+            transitioned_by="Judge",
+            blocker_owner=BlockerOwnership.HUMAN,
+            source_phase="IMPROVE_NEEDED",
+            target_phase="IMPROVE_NEEDED",
+        ),
+    )
+
+    service.transition(
+        tmp_path,
+        to_phase="RESULT_NEEDED",
+        actor="Judge",
+        reason="human gate resolved",
+    )
+
+    with pytest.raises(TransitionOutcomeMissing):
+        get_transition_outcome(tmp_path)

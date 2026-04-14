@@ -3,22 +3,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ...core.ownership import CanonicalOwnershipResolver, OwnershipResolutionState
 
-def _has_builder_resume_override(review_text: str) -> bool:
-    lowered = review_text.lower()
-    has_build_needed = "build_needed" in lowered or "return to build" in lowered
-    has_judge_marker = "judge" in lowered and ("判断" in lowered or "decision" in lowered)
-    has_builder_instruction = (
-        "builder への指示" in lowered
-        or "builderへの指示" in lowered
-        or "builder instructions" in lowered
-    )
-    has_review_resume = (
-        "review に進める" in lowered
-        or "proceed to review" in lowered
-    )
-    return has_build_needed and (has_judge_marker or has_builder_instruction or has_review_resume)
-
+# T4 compensation logic was removed prior to this run. Phase changes are owned
+# by TransitionService (see 002c1); this module now only derives rebuild notes.
 
 def _extract_review_verdict(review_text: str) -> str | None:
     patterns = [
@@ -78,10 +66,7 @@ def _extract_human_actions(review_text: str) -> list[str]:
     return deduped
 
 
-def detect_human_owned_blocker(review_text: str) -> dict[str, object] | None:
-    if _has_builder_resume_override(review_text):
-        return None
-
+def _detect_human_owned_blocker_from_text(review_text: str) -> dict[str, object] | None:
     verdict = _extract_review_verdict(review_text)
     if verdict and re.search(r'\b(pass|accept|adopt)\b', verdict, re.IGNORECASE):
         # Only skip if the verdict does not simultaneously assert a human-owned blocker.
@@ -172,6 +157,120 @@ def detect_human_owned_blocker(review_text: str) -> dict[str, object] | None:
     }
 
 
+def get_blocker_ownership_decision(review_text: str, *, run_dir: Path | None = None) -> dict[str, object]:
+    actions = _extract_human_actions(review_text)
+    if run_dir is None:
+        blocker = _detect_human_owned_blocker_from_text(review_text)
+        owner = "HUMAN" if blocker is not None else "SYSTEM"
+        return {
+            "owner": owner,
+            "status": owner,
+            "blocker": blocker,
+        }
+
+    resolution = CanonicalOwnershipResolver().inspect(run_dir)
+    if resolution.state is OwnershipResolutionState.HUMAN:
+        return {
+            "owner": "HUMAN",
+            "status": resolution.state.value,
+            "blocker": {
+                "summary": "Human-owned blocker detected from the canonical transition outcome record.",
+                "evidence": ["transition_outcome.json:blocker_owner=HUMAN"],
+                "actions": actions,
+            },
+        }
+    if resolution.state is OwnershipResolutionState.SYSTEM:
+        return {
+            "owner": "SYSTEM",
+            "status": resolution.state.value,
+            "blocker": None,
+        }
+    return {
+        "owner": resolution.state.value,
+        "status": resolution.state.value,
+        "detail": resolution.detail,
+        "blocker": None,
+    }
+
+
+def get_build_gate_decision(run_dir: Path) -> dict[str, object]:
+    review_text = ""
+    source_name: str | None = None
+    source_candidates = iter_build_blocker_sources(run_dir)
+    for candidate_source, candidate_text in source_candidates:
+        stripped = candidate_text.strip()
+        if not stripped:
+            continue
+        review_text = stripped
+        source_name = candidate_source
+        break
+
+    decision = get_blocker_ownership_decision(review_text, run_dir=run_dir)
+    status = str(decision.get("status") or decision.get("owner") or "")
+    detail = str(decision.get("detail") or "").strip() or None
+    blocker = decision.get("blocker")
+    policy = "PROCEED"
+    allow_build = True
+    summary: str | None = None
+    actions: list[str] = []
+
+    if isinstance(blocker, dict):
+        summary = str(blocker.get("summary") or "").strip() or None
+        actions = [str(action) for action in blocker.get("actions", []) if str(action).strip()]
+
+    if status == OwnershipResolutionState.HUMAN.value:
+        policy = "BLOCK_HUMAN"
+        allow_build = False
+        review_source = next(
+            (
+                (candidate_source, candidate_text)
+                for candidate_source, candidate_text in source_candidates
+                if candidate_source != "build_review.md"
+            ),
+            None,
+        )
+        if review_source is not None:
+            source_name = review_source[0]
+            if not actions:
+                actions = _extract_human_actions(review_source[1])
+        source_name = source_name or "transition_outcome.json"
+    elif status in {
+        OwnershipResolutionState.UNRECORDED.value,
+        OwnershipResolutionState.CORRUPT.value,
+    }:
+        policy = "FAIL_CLOSED"
+        allow_build = False
+        source_name = "transition_outcome.json"
+        if summary is None:
+            if status == OwnershipResolutionState.UNRECORDED.value:
+                summary = "Build blocked: canonical blocker ownership record is unrecorded."
+            else:
+                summary = "Build blocked: canonical blocker ownership record is corrupt."
+    elif status == OwnershipResolutionState.SUPERSEDED.value:
+        source_name = "transition_outcome.json"
+        summary = summary or "Canonical blocker ownership record is superseded for the current phase."
+    else:
+        source_name = source_name or "transition_outcome.json"
+
+    return {
+        "status": status,
+        "owner": decision.get("owner"),
+        "policy": policy,
+        "allow_build": allow_build,
+        "summary": summary,
+        "detail": detail,
+        "source": source_name,
+        "actions": actions,
+        "blocker": blocker if isinstance(blocker, dict) else None,
+    }
+
+
+def detect_human_owned_blocker(review_text: str, *, run_dir: Path | None = None) -> dict[str, object] | None:
+    decision = get_blocker_ownership_decision(review_text, run_dir=run_dir)
+    blocker = decision.get("blocker")
+    return blocker if isinstance(blocker, dict) else None
+
+
 def _strip_rerun_comments(text: str) -> str:
     """Remove all ## Rerun Comment sections from build_review.md text.
 
@@ -192,16 +291,9 @@ def iter_build_blocker_sources(run_dir: Path) -> list[tuple[str, str]]:
     sources: list[tuple[str, str]] = []
 
     build_review = run_dir / "build_review.md"
-    build_review_text: str | None = None
     if build_review.exists():
         raw = build_review.read_text(encoding="utf-8")
-        build_review_text = _strip_rerun_comments(raw)
-        sources.append((build_review.name, build_review_text))
-
-    # If build_review.md (stripped) contains a Judge-issued build-resume override,
-    # skip the review artifact check — the Judge decision supersedes the Critic.
-    if build_review_text is not None and _has_builder_resume_override(build_review_text):
-        return sources
+        sources.append((build_review.name, _strip_rerun_comments(raw)))
 
     review_path = latest_review_artifact(run_dir)
     if review_path is not None:

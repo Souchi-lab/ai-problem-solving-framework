@@ -323,4 +323,4 @@ Show-AdvisoryNextPhase -ProjectRoot (Split-Path $PSScriptRoot -Parent) -RunDir $
 
 Write-Host ""
 Write-Host "[Tip] Fill build_review.md if needed, then re-run Builder with:" -ForegroundColor Green
-Write-Host ("       .\scripts\apsf-claude-act.ps1 {0}" -f $Run) -ForegroundColor DarkGray
+Write-Host ("       .\scripts\apsf-claude-build.ps1 {0}" -f $Run) -ForegroundColor DarkGray

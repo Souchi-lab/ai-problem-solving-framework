@@ -42,9 +42,17 @@ Phase Transition Rule Map (SC1):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from ..ownership.record import (
+    BlockerOwnership,
+    TransitionOutcomeRecord,
+    TransitionType,
+    clear_transition_outcome,
+    write_transition_outcome,
+)
 from .run_state import PhaseStatus, RunState
 from .run_state_repository import RunStateRepository
 
@@ -104,7 +112,9 @@ VALID_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
 })
 
 # Actors that bypass the transition rule map.
-# These actors perform recoveries or corrections outside the normal flow.
+# This does not grant direct RunStateRepository.save() access; callers still
+# persist through TransitionService. The only direct-writer exception is the
+# recovery-only CheckpointApplyService boundary.
 _UNCONSTRAINED_ACTORS: frozenset[str] = frozenset({
     "Judge",   # Judge decisions can return the run to any phase
     "rerun",   # Rerun scripts (apsf-rerun-*.ps1)
@@ -221,6 +231,7 @@ class TransitionService:
 
         owner = current_owner or _PHASE_OWNER.get(to_phase, "")
 
+        now_iso = datetime.now(timezone.utc).isoformat()
         if state is None:
             state = RunState(
                 run_id=run_dir.name,
@@ -231,6 +242,7 @@ class TransitionService:
                 last_error="",
                 active_handoff_id="",
                 gate_failures=gate_failures if gate_failures is not None else [],
+                phase_entered_at=now_iso,
             )
         else:
             state.current_phase = to_phase
@@ -240,8 +252,15 @@ class TransitionService:
             state.last_error = ""
             state.active_handoff_id = ""
             state.gate_failures = gate_failures if gate_failures is not None else []
+            state.phase_entered_at = now_iso
 
         state_repo.save(state)
+        self._sync_transition_outcome(
+            run_dir=run_dir,
+            from_phase=actual_from,
+            to_phase=to_phase,
+            actor=actor,
+        )
 
         return TransitionResult(
             success=True,
@@ -252,6 +271,39 @@ class TransitionService:
             current_owner=owner,
             actor=actor,
             reason=reason,
+        )
+
+    def _sync_transition_outcome(
+        self,
+        *,
+        run_dir: Path,
+        from_phase: str,
+        to_phase: str,
+        actor: str,
+    ) -> None:
+        # transition_outcome.json is a current-cycle authority record.
+        # Any new phase transition supersedes prior human-blocked/system-blocked
+        # ownership unless this transition itself establishes BUILD_NEEDED or
+        # rerun-to-build ownership.
+        if to_phase != "BUILD_NEEDED":
+            clear_transition_outcome(run_dir)
+            return
+
+        transition_type = TransitionType.BUILD_NEEDED
+        if actor == "rerun":
+            transition_type = TransitionType.RERUN_REQUESTED
+
+        write_transition_outcome(
+            run_dir,
+            TransitionOutcomeRecord(
+                run_id=run_dir.name,
+                transition_type=transition_type,
+                transitioned_at=datetime.now(timezone.utc).isoformat(),
+                transitioned_by=actor,
+                blocker_owner=BlockerOwnership.SYSTEM,
+                source_phase=from_phase,
+                target_phase=to_phase,
+            ),
         )
 
     def set_status(

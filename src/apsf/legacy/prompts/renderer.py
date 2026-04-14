@@ -156,6 +156,11 @@ def render_review_prompt(
         "---\n\n"
         "Output format: Follow the review.md template.\n"
         "Return ONLY the raw Markdown content for review.md.\n"
+        "Include exactly one ```apsf-judge-advisory``` JSON block in review.md.\n"
+        "Zero blocks or multiple blocks are invalid.\n"
+        'The block must contain {"recommendation": "Return to Build" | "Return to Plan" | "Accept", "human_owned_blocker": true|false}.\n'
+        "This block is the canonical structured recommendation source for the current review completion flow.\n"
+        "Do not infer it from free-form prose; state the recommendation directly in the block.\n"
         "Do not include meta-commentary, file paths, or explanatory text before or after the Markdown.\n"
         "If Re-review Feedback is provided, address its requested revisions while still producing a full independent review.\n"
         "Provide specific, actionable improvement suggestions for each issue.\n"

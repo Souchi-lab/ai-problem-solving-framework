@@ -53,6 +53,7 @@ class RunState:
     last_error:        str
     active_handoff_id: str
     gate_failures:     list = field(default_factory=list)  # advisory gate failure reasons（空リストが正常）
+    phase_entered_at:  str = ""  # ISO timestamp when current_phase was last entered (freshness anchor for advisory)
 
     def to_dict(self) -> dict[str, Any]:
         """JSON シリアライズ用 dict を返す。"""
@@ -70,4 +71,5 @@ class RunState:
             last_error=str(data.get("last_error", "")),
             active_handoff_id=str(data.get("active_handoff_id", "")),
             gate_failures=list(data.get("gate_failures", [])),
+            phase_entered_at=str(data.get("phase_entered_at", "")),
         )

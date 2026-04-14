@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
-import { Activity, Check, ChevronLeft, ChevronRight, Clock, Copy, FileText, Search, Settings, Terminal } from 'lucide-react'
+import { Activity, Check, ChevronLeft, ChevronRight, Clock, Copy, FileText, Pin, Search, Settings, Terminal } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -268,6 +268,11 @@ interface RunningExecutionState {
   startedAt: number
 }
 
+interface AutoLoopStatus {
+  running: boolean
+  stop_pending: boolean
+}
+
 // ── Agent OS interfaces ─────────────────────────────────────────────────────
 
 interface RunStateInfo {
@@ -403,17 +408,6 @@ const CODEX_PRESET_RULES = {
   },
 } as const
 
-// Phase → artifact that should be written next (for readiness hint)
-const PHASE_TO_ARTIFACT: Record<string, string> = {
-  PLAN_NEEDED: 'plan.md',
-  BUILD_NEEDED: 'build.md',
-  REVIEW_NEEDED: 'review.md',
-  IMPROVE_NEEDED: 'improve.md',
-  RESULT_NEEDED: 'result.md',
-  IMPROVE_PLAN_OPTIONAL: 'improve-plan.md',
-  VERIFY_OPTIONAL: 'verify.md',
-}
-
 const formatDuration = (start?: string | null, end?: string | null) => {
   if (!start || !end) return null
   try {
@@ -515,17 +509,92 @@ const AssignmentModeBadge = ({ mode }: { mode: string }) => {
     </span>
   )
 }
-function splitArtifactLabel(name: string) {
-  const dot = name.lastIndexOf('.')
-  const base = dot > 0 ? name.slice(0, dot) : name
-  const ext = dot > 0 ? name.slice(dot) : ''
-  const pivot = base.indexOf('_')
-  if (pivot === -1) {
-    return { prefix: '', suffix: name }
+const ARTIFACT_REFERENCE_GROUPS = [
+  { key: 'G', label: 'Goal' },
+  { key: 'P', label: 'Plan' },
+  { key: 'B', label: 'Build' },
+  { key: 'I', label: 'Improve' },
+  { key: 'R', label: 'Result' },
+] as const
+
+const TAXONOMY_SECTION_ORDER = ['work', 'fw-improvement', 'sochi-blocks', 'legacy'] as const
+const TAXONOMY_SECTION_LABELS: Record<string, string> = {
+  work: 'Work',
+  'fw-improvement': 'FW Improvement',
+  'sochi-blocks': 'SoChi Blocks',
+  legacy: 'Legacy',
+}
+const TAXONOMY_PIN_STORAGE_KEY = 'apsf.viewer.sidebar.pinnedTaxonomies'
+const TAXONOMY_OPEN_STORAGE_KEY = 'apsf.viewer.sidebar.openTaxonomies'
+
+const ARTIFACT_DISPLAY_META: Record<string, { group: (typeof ARTIFACT_REFERENCE_GROUPS)[number]['key']; title: string }> = {
+  'execution-assignment.md': { group: 'G', title: 'Execution Assignment' },
+  'model-assignment.md': { group: 'G', title: 'Model Assignment' },
+  'goal.md': { group: 'G', title: 'Goal' },
+  'plan.md': { group: 'P', title: 'Plan' },
+  'plan_review.md': { group: 'P', title: 'Plan Review' },
+  'handoff.md': { group: 'P', title: 'Handoff' },
+  'build.md': { group: 'B', title: 'Build' },
+  'build_review.md': { group: 'B', title: 'Build Review' },
+  'review.md': { group: 'I', title: 'Review' },
+  'review_review.md': { group: 'I', title: 'Review Rework' },
+  'improve.md': { group: 'I', title: 'Improve' },
+  'improve_review.md': { group: 'I', title: 'Improve Review' },
+  'result.md': { group: 'R', title: 'Result' },
+  'transcript.md': { group: 'R', title: 'Transcript' },
+}
+
+function titleCaseArtifactName(value: string) {
+  return value
+    .replace(/\.md$/i, '')
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ')
+}
+
+function getArtifactDisplayMeta(name: string) {
+  const exact = ARTIFACT_DISPLAY_META[name]
+  if (exact) {
+    return {
+      group: exact.group,
+      title: exact.title,
+      subtitle: name,
+    }
   }
   return {
-    prefix: base.slice(0, pivot),
-    suffix: `${base.slice(pivot)}${ext}`,
+    group: 'R' as const,
+    title: titleCaseArtifactName(name),
+    subtitle: name,
+  }
+}
+
+function buildArtifactReferenceGroups(artifacts: ArtifactPreview[]) {
+  const grouped = new Map<string, ArtifactPreview[]>()
+  for (const artifact of artifacts) {
+    if (!artifact.exists) continue
+    const { group } = getArtifactDisplayMeta(artifact.name)
+    const bucket = grouped.get(group) ?? []
+    bucket.push(artifact)
+    grouped.set(group, bucket)
+  }
+  return ARTIFACT_REFERENCE_GROUPS
+    .map((section) => ({
+      ...section,
+      artifacts: (grouped.get(section.key) ?? []).sort((left, right) => left.name.localeCompare(right.name)),
+    }))
+    .filter((section) => section.artifacts.length > 0)
+}
+
+function loadStoredStringArray(key: string, fallback: string[]) {
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : fallback
+  } catch {
+    return fallback
   }
 }
 
@@ -1886,15 +1955,117 @@ function ExecutionLogModal({
   )
 }
 
+function ArtifactReferenceModal({
+  artifacts,
+  selectedArtifact,
+  artifactContent,
+  runName,
+  onClose,
+  onSelect,
+}: {
+  artifacts: ArtifactPreview[]
+  selectedArtifact: string | null
+  artifactContent: string
+  runName: string
+  onClose: () => void
+  onSelect: (name: string) => void
+}) {
+  const sections = buildArtifactReferenceGroups(artifacts)
+  const selectedMeta = selectedArtifact ? getArtifactDisplayMeta(selectedArtifact) : null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="flex h-[85vh] w-full max-w-6xl overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/60" onClick={(e) => e.stopPropagation()}>
+        <aside className="flex w-full max-w-sm shrink-0 flex-col border-r border-zinc-800 bg-zinc-950/95">
+          <div className="border-b border-zinc-800 px-5 py-4">
+            <div className="text-[10px] font-bold uppercase tracking-[0.24em] text-zinc-500">Artifact Reference</div>
+            <div className="mt-1 truncate text-sm font-semibold text-zinc-100" title={runName}>{runName}</div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+            <div className="space-y-4">
+              {sections.map((section) => (
+                <div key={section.key} className="space-y-2">
+                  <div className="flex items-center gap-2 px-2">
+                    <div className="flex h-6 w-6 items-center justify-center rounded border border-indigo-500/30 bg-indigo-500/10 text-[11px] font-bold text-indigo-200">
+                      {section.key}
+                    </div>
+                    <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">{section.label}</div>
+                  </div>
+                  <div className="space-y-1">
+                    {section.artifacts.map((artifact) => {
+                      const meta = getArtifactDisplayMeta(artifact.name)
+                      const selected = selectedArtifact === artifact.name
+                      return (
+                        <button
+                          key={artifact.name}
+                          type="button"
+                          onClick={() => onSelect(artifact.name)}
+                          className={`w-full rounded-xl border px-3 py-2.5 text-left transition-colors ${
+                            selected
+                              ? 'border-indigo-300/70 bg-indigo-500/20 text-indigo-50'
+                              : 'border-zinc-800 bg-zinc-900/40 text-zinc-200 hover:border-zinc-700 hover:bg-zinc-900/70'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className={`mt-0.5 rounded border p-1.5 ${selected ? 'border-indigo-300/40 bg-indigo-400/15 text-indigo-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400'}`}>
+                              <FileText size={13} />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className={`truncate text-sm ${selected ? 'font-semibold text-white' : 'font-medium text-zinc-100'}`}>{meta.title}</div>
+                              <div className={`mt-0.5 truncate text-[11px] ${selected ? 'text-indigo-200/70' : 'text-zinc-500'}`}>{meta.subtitle}</div>
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+              {sections.length === 0 && (
+                <div className="rounded-xl border border-dashed border-zinc-800 px-4 py-6 text-center text-xs text-zinc-500">
+                  No artifact documents are available for this run.
+                </div>
+              )}
+            </div>
+          </div>
+        </aside>
+
+        <section className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-start justify-between gap-4 border-b border-zinc-800 px-5 py-4">
+            <div className="min-w-0">
+              <div className="text-[10px] font-bold uppercase tracking-[0.24em] text-zinc-500">
+                {selectedMeta ? `${selectedMeta.group} / ${selectedMeta.title}` : 'Artifact'}
+              </div>
+              <div className="mt-1 truncate text-sm font-semibold text-zinc-100">{selectedArtifact ?? 'No artifact selected'}</div>
+            </div>
+            <button onClick={onClose} className="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:border-zinc-500 hover:text-white">
+              Close
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            {selectedArtifact ? (
+              <div className="prose prose-invert prose-zinc max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifactContent}</ReactMarkdown>
+              </div>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-zinc-500">Select an artifact to preview.</div>
+            )}
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
-  const HEADER_COMPACT_ENTER_SCROLL = 220
-  const HEADER_COMPACT_EXIT_SCROLL = 72
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [matrixRows, setMatrixRows] = useState<MatrixRow[]>([])
   const [recentExecutions, setRecentExecutions] = useState<ActionExecutionRecord[]>([])
   const [workspaceTab, setWorkspaceTab] = useState<'detail' | 'management' | 'activity' | 'agent-os'>('agent-os')
   const [operatorFilter, setOperatorFilter] = useState<'active' | 'recent' | 'all'>('active')
   const [humanBlockerFilter, setHumanBlockerFilter] = useState<'all' | 'blocked'>('all')
+  const [pinnedTaxonomies, setPinnedTaxonomies] = useState<string[]>(() => loadStoredStringArray(TAXONOMY_PIN_STORAGE_KEY, ['work']))
+  const [openTaxonomies, setOpenTaxonomies] = useState<string[]>(() => loadStoredStringArray(TAXONOMY_OPEN_STORAGE_KEY, ['work', 'fw-improvement', 'sochi-blocks']))
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [selectedRun, setSelectedRun] = useState<string | null>(null)
   const [selectedTaxonomy, setSelectedTaxonomy] = useState<string | null>(null)
@@ -1902,11 +2073,13 @@ export default function App() {
   const [targetDetail, setTargetDetail] = useState<RunDetail | null>(null)
   const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null)
   const [artifactContent, setArtifactContent] = useState<string>('')
+  const [artifactModalOpen, setArtifactModalOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [jobsSearchTerm, setJobsSearchTerm] = useState('')
   const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null)
   const [selectedExecutionLog, setSelectedExecutionLog] = useState<ActionExecutionRecord | null>(null)
   const [saveCommentResult, setSaveCommentResult] = useState<SaveCommentResult | null>(null)
+  const [phaseContextActionId, setPhaseContextActionId] = useState<string>('')
   const [history, setHistory] = useState<RunHistory | null>(null)
   const [historyRun, setHistoryRun] = useState<string | null>(null)
   const [viewerConfig, setViewerConfig] = useState<ViewerConfig | null>(null)
@@ -1937,15 +2110,15 @@ export default function App() {
   const [selectedRecoverySnapshotId, setSelectedRecoverySnapshotId] = useState<string | null>(null)
   const [selectedRecoveryApplyTraceId, setSelectedRecoveryApplyTraceId] = useState<string | null>(null)
   const [agentOSFeedback, setAgentOSFeedback] = useState<AgentOSActionFeedback | null>(null)
+  const [autoLoopStatus, setAutoLoopStatus] = useState<AutoLoopStatus | null>(null)
+  const [autoLoopLoading, setAutoLoopLoading] = useState(false)
+  const [autoLoopMutating, setAutoLoopMutating] = useState<'start' | 'stop' | 'cancel' | null>(null)
   const [isLoadingRuns, setIsLoadingRuns] = useState(true)
   const [runsError, setRunsError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [headerCompact, setHeaderCompact] = useState(false)
   const [currentViewOpen, setCurrentViewOpen] = useState(false)
   const detailRequestIdRef = useRef(0)
   const refreshRequestIdRef = useRef(0)
-  const headerCompactRef = useRef(false)
-  const lastWorkspaceScrollTopRef = useRef(0)
   const currentActiveDetail = targetDetail ?? detail
   const activeDetailPhase = currentActiveDetail?.phase ?? null
   const specialistPhaseOverride =
@@ -2096,6 +2269,89 @@ export default function App() {
   }
   }
 
+  const loadAutoLoopStatus = useCallback(async (taxonomy: string, runName: string) => {
+    setAutoLoopLoading(true)
+    try {
+      const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/auto-loop-status`)
+      if (!resp.ok) {
+        throw new Error(`Failed to load auto-loop status (${resp.status})`)
+      }
+      const data = await resp.json()
+      setAutoLoopStatus({
+        running: Boolean(data.running),
+        stop_pending: Boolean(data.stop_pending),
+      })
+    } catch {
+      setAutoLoopStatus(null)
+    } finally {
+      setAutoLoopLoading(false)
+    }
+  }, [])
+
+  const startAutoLoop = useCallback(async (taxonomy: string, runName: string) => {
+    setAutoLoopMutating('start')
+    try {
+      const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/start-auto-loop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        throw new Error(typeof data.detail === 'string' ? data.detail : `Failed to start auto-loop (${resp.status})`)
+      }
+      await loadAutoLoopStatus(taxonomy, runName)
+    } catch (error) {
+      setModalConfig({
+        title: 'Failed to Start Auto-Loop',
+        message: error instanceof Error ? error.message : 'Failed to start auto-loop.',
+        onConfirm: () => setModalConfig(null),
+      })
+    } finally {
+      setAutoLoopMutating(null)
+    }
+  }, [loadAutoLoopStatus])
+
+  const requestAutoLoopStop = useCallback(async (taxonomy: string, runName: string) => {
+    setAutoLoopMutating('stop')
+    try {
+      const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/request-stop`, { method: 'POST' })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        throw new Error(typeof data.detail === 'string' ? data.detail : `Failed to request stop (${resp.status})`)
+      }
+      await loadAutoLoopStatus(taxonomy, runName)
+    } catch (error) {
+      setModalConfig({
+        title: 'Failed to Request Auto-Loop Stop',
+        message: error instanceof Error ? error.message : 'Failed to request auto-loop stop.',
+        onConfirm: () => setModalConfig(null),
+      })
+    } finally {
+      setAutoLoopMutating(null)
+    }
+  }, [loadAutoLoopStatus])
+
+  const cancelAutoLoopStop = useCallback(async (taxonomy: string, runName: string) => {
+    setAutoLoopMutating('cancel')
+    try {
+      const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/request-stop`, { method: 'DELETE' })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        throw new Error(typeof data.detail === 'string' ? data.detail : `Failed to cancel stop (${resp.status})`)
+      }
+      await loadAutoLoopStatus(taxonomy, runName)
+    } catch (error) {
+      setModalConfig({
+        title: 'Failed to Cancel Stop Request',
+        message: error instanceof Error ? error.message : 'Failed to cancel stop request.',
+        onConfirm: () => setModalConfig(null),
+      })
+    } finally {
+      setAutoLoopMutating(null)
+    }
+  }, [loadAutoLoopStatus])
+
   const loadSpecialistCandidates = async (taxonomy: string, runName: string, phaseOverride?: string | null): Promise<SpecialistCandidatesData | null> => {
     try {
       const params = new URLSearchParams()
@@ -2196,25 +2452,6 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [executingRuns])
 
-  const handleWorkspaceScroll = (scrollTop: number) => {
-    const scrollingDown = scrollTop > lastWorkspaceScrollTopRef.current
-    const scrollingUp = scrollTop < lastWorkspaceScrollTopRef.current
-    lastWorkspaceScrollTopRef.current = scrollTop
-
-    if (!headerCompactRef.current) {
-      if (scrollingDown && scrollTop >= HEADER_COMPACT_ENTER_SCROLL) {
-        headerCompactRef.current = true
-        setHeaderCompact(true)
-      }
-      return
-    }
-
-    if (scrollingUp && scrollTop <= HEADER_COMPACT_EXIT_SCROLL) {
-      headerCompactRef.current = false
-      setHeaderCompact(false)
-    }
-  }
-
   useEffect(() => {
     setSelectedRecoveryCheckpointId(null)
     setSelectedRecoverySnapshotId(null)
@@ -2226,7 +2463,8 @@ export default function App() {
     if (!selectedTaxonomy || !targetRun) return
     void refreshAgentOS(selectedTaxonomy, targetRun)
     void loadSpecialistCandidates(selectedTaxonomy, targetRun, specialistPhaseOverride)
-  }, [activeDetailPhase, refreshAgentOS, selectedTaxonomy, targetRun, specialistPhaseOverride])
+    void loadAutoLoopStatus(selectedTaxonomy, targetRun)
+  }, [activeDetailPhase, loadAutoLoopStatus, refreshAgentOS, selectedTaxonomy, targetRun, specialistPhaseOverride])
 
   // Atomic: fetch parent detail + history in parallel, update all state together
   const fetchDetail = async (taxonomy: string, runName: string) => {
@@ -2235,6 +2473,7 @@ export default function App() {
     setSelectedTaxonomy(taxonomy)
     setTargetRun(runName)
     setWorkspaceTab('agent-os')
+    setArtifactModalOpen(false)
     setSelectedArtifact(null)
     setArtifactContent('')
     setCodexResult(null)
@@ -2257,6 +2496,7 @@ export default function App() {
     setTargetRun(runName)
     setAgentOSLoading(true)
     setAgentOSData(null)
+    setArtifactModalOpen(false)
     setSelectedArtifact(null)
     setArtifactContent('')
     setCodexResult(null)
@@ -2299,6 +2539,19 @@ export default function App() {
     setArtifactContent(data.content ?? '')
   }, [selectedTaxonomy, targetRun])
 
+  const openArtifactReferenceModal = useCallback((preferredArtifact?: string) => {
+    const availableArtifacts = (targetDetail?.artifacts ?? detail?.artifacts ?? []).filter((artifact) => artifact.exists)
+    if (availableArtifacts.length === 0) return
+    const nextArtifact =
+      preferredArtifact
+      ?? (selectedArtifact && availableArtifacts.some((artifact) => artifact.name === selectedArtifact) ? selectedArtifact : null)
+      ?? availableArtifacts[0].name
+    setArtifactModalOpen(true)
+    if (nextArtifact !== selectedArtifact || artifactContent === '') {
+      void fetchArtifact(nextArtifact)
+    }
+  }, [artifactContent, detail?.artifacts, fetchArtifact, selectedArtifact, targetDetail?.artifacts])
+
   useEffect(() => {
     void fetchRuns()
     void loadOperatorMatrix().then(setMatrixRows).catch(() => setMatrixRows([]))
@@ -2314,6 +2567,16 @@ export default function App() {
       clearInterval(matrixTimer)
     }
   }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(TAXONOMY_PIN_STORAGE_KEY, JSON.stringify(pinnedTaxonomies))
+  }, [pinnedTaxonomies])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(TAXONOMY_OPEN_STORAGE_KEY, JSON.stringify(openTaxonomies))
+  }, [openTaxonomies])
 
   // Atomic auto-refresh: all three fetches in parallel, single render pass
   useEffect(() => {
@@ -2397,6 +2660,22 @@ export default function App() {
     } finally {
       setJudgeChatLoading(false)
     }
+  }
+
+  const openJudgeChat = () => {
+    if (judgeChatMessages.length === 0) {
+      const phaseLine = activeDetailPhase ? `Current phase: ${activeDetailPhase}.` : ''
+      const recommendationLine = activeJudgeRecommendation
+        ? `Suggested return: ${activeJudgeRecommendation.suggested_action_label || activeJudgeRecommendation.decision}.`
+        : 'No judge advisory is loaded yet.'
+      setJudgeChatMessages([
+        {
+          role: 'assistant',
+          content: `Judge support is ready. ${phaseLine} ${recommendationLine} Ask about next action, tradeoffs, or what to write in the return comment.`.trim(),
+        },
+      ])
+    }
+    setJudgeChatOpen(true)
   }
 
   const saveRerunComment = async (action: OperatorAction, taxonomy: string, runName: string) => {
@@ -2757,7 +3036,7 @@ export default function App() {
   })
   const executableActions = sortedDetailActions.filter((action) => action.execution_type !== 'human')
   const humanActions = sortedDetailActions.filter((action) => action.execution_type === 'human')
-  const improveDecisionActionIds = ['phase-primary', 'rerun-plan', 'rerun-build', 'rerun-review']
+  const improveDecisionActionIds = ['accept-improve', 'phase-primary', 'rerun-plan', 'rerun-build', 'rerun-review']
   const improveDecisionActions = activeDetailPhase === 'IMPROVE_NEEDED'
     ? improveDecisionActionIds
         .map((id) => sortedDetailActions.find((action) => action.id === id) ?? null)
@@ -2767,10 +3046,22 @@ export default function App() {
   const regularExecutableActions = executableActions.filter((action) => !improveDecisionActionIdSet.has(action.id))
   const regularHumanActions = humanActions.filter((action) => !improveDecisionActionIdSet.has(action.id))
   const primaryExecutableAction = executableActions.find((action) => action.primary) ?? executableActions[0] ?? null
+  const phaseContextActions = activeDetailPhase === 'IMPROVE_NEEDED' ? sortedDetailActions : [...executableActions, ...humanActions]
   const childRuns = detail?.children ?? []
   const matchingMatrixRows = matrixRows.filter((row) => row.name.toLowerCase().includes(searchTerm.toLowerCase()))
   const activePhases = new Set(['PLAN_NEEDED', 'BUILD_NEEDED', 'REVIEW_NEEDED', 'IMPROVE_NEEDED', 'RESULT_NEEDED'])
   const recentRunNames = new Set(recentExecutions.map((job) => job.run_name))
+  const togglePinnedTaxonomy = (taxonomy: string) => {
+    setPinnedTaxonomies((current) =>
+      current.includes(taxonomy) ? current.filter((value) => value !== taxonomy) : [...current, taxonomy],
+    )
+    setOpenTaxonomies((current) => (current.includes(taxonomy) ? current : [...current, taxonomy]))
+  }
+  const toggleOpenTaxonomy = (taxonomy: string) => {
+    setOpenTaxonomies((current) =>
+      current.includes(taxonomy) ? current.filter((value) => value !== taxonomy) : [...current, taxonomy],
+    )
+  }
   const filteredRecentExecutions = recentExecutions.filter((job) =>
     job.run_name.toLowerCase().includes(jobsSearchTerm.toLowerCase()),
   )
@@ -2780,22 +3071,76 @@ export default function App() {
     return activePhases.has(row.phase)
   }).slice(0, 10)
   const showDetailedAssignmentCard = searchTerm.trim() === '__show_assignment_details__'
+  const taxonomySections = (() => {
+    const grouped = new Map<string, RunSummary[]>()
+    for (const run of filteredRuns) {
+      const bucket = grouped.get(run.taxonomy) ?? []
+      bucket.push(run)
+      grouped.set(run.taxonomy, bucket)
+    }
+    const seen = new Set<string>()
+    const orderedTaxonomies = [
+      ...TAXONOMY_SECTION_ORDER.filter((taxonomy) => grouped.has(taxonomy)),
+      ...Array.from(grouped.keys()).filter((taxonomy) => !TAXONOMY_SECTION_ORDER.includes(taxonomy as (typeof TAXONOMY_SECTION_ORDER)[number])).sort(),
+    ]
+    return orderedTaxonomies
+      .filter((taxonomy) => {
+        if (seen.has(taxonomy)) return false
+        seen.add(taxonomy)
+        return true
+      })
+      .map((taxonomy) => ({
+        taxonomy,
+        label: TAXONOMY_SECTION_LABELS[taxonomy] ?? taxonomy,
+        pinned: pinnedTaxonomies.includes(taxonomy),
+        open: openTaxonomies.includes(taxonomy),
+        runs: (grouped.get(taxonomy) ?? []).sort((left, right) => right.last_modified - left.last_modified),
+      }))
+      .sort((left, right) => {
+        if (left.pinned !== right.pinned) return left.pinned ? -1 : 1
+        const leftIndex = TAXONOMY_SECTION_ORDER.indexOf(left.taxonomy as (typeof TAXONOMY_SECTION_ORDER)[number])
+        const rightIndex = TAXONOMY_SECTION_ORDER.indexOf(right.taxonomy as (typeof TAXONOMY_SECTION_ORDER)[number])
+        if (leftIndex !== -1 || rightIndex !== -1) {
+          if (leftIndex === -1) return 1
+          if (rightIndex === -1) return -1
+          return leftIndex - rightIndex
+        }
+        return left.label.localeCompare(right.label)
+      })
+  })()
   const activeTargetName = targetDetail?.name ?? detail?.name ?? ''
   const activeChildName = detail && activeTargetName !== detail.name ? activeTargetName : null
   const activeRunExecutionState =
     selectedTaxonomy && activeTargetName ? executingStateForRun(selectedTaxonomy, activeTargetName) : null
   const activeRunExecutionId = activeRunExecutionState?.actionId ?? null
-  const isPrimaryActionRunning = primaryExecutableAction !== null && activeRunExecutionId === primaryExecutableAction.id
   const isActiveRunBusy = activeRunExecutionId !== null
   const activeExecutionElapsed = activeRunExecutionState ? formatElapsedMs(executionNow - activeRunExecutionState.startedAt) : null
   const failingGateResults = agentOSData?.gate_results?.filter((gate) => !gate.passed) ?? []
   const getCodexPresetsForPhase = (phase: string) =>
     (Object.entries(CODEX_PRESET_RULES) as Array<[CodexBridgeResult['preset_id'], (typeof CODEX_PRESET_RULES)[keyof typeof CODEX_PRESET_RULES]]>)
       .filter(([, rule]) => rule.allowedPhases.has(phase))
-  const targetTabs = detail
+  const runLineage = detail
     ? [
-        { name: detail.name, label: 'Parent' },
-        ...childRuns.map((child) => ({ name: child.name, label: child.child_name })),
+        {
+          name: detail.name,
+          label: 'Parent',
+          displayName: detail.name,
+          phase: detail.phase,
+          nextRole: detail.next_role,
+          hasChildren: childRuns.length > 0,
+          isParent: true,
+          isSelected: targetRun === detail.name,
+        },
+        ...childRuns.map((child) => ({
+          name: child.name,
+          label: 'Child',
+          displayName: child.child_name,
+          phase: child.phase,
+          nextRole: child.next_role,
+          hasChildren: child.has_children,
+          isParent: false,
+          isSelected: targetRun === child.name,
+        })),
       ]
     : []
   const targetReworkCount = [
@@ -2834,12 +3179,30 @@ export default function App() {
   const activeDecisionReason = activeDetail?.decision_reason ?? ''
   const activeAssignment = activeDetail?.assignment_summary ?? null
   const activeSpecialist = activeDetail?.specialist_visibility ?? null
+  const selectedPhaseContextAction =
+    phaseContextActions.find((action) => action.id === phaseContextActionId)
+    ?? primaryExecutableAction
+    ?? phaseContextActions[0]
+    ?? null
   const suggestedJudgeAction =
     activeJudgeRecommendation?.suggested_action_id
       ? detailActions.find((action) => action.id === activeJudgeRecommendation.suggested_action_id) ?? null
       : null
   const suggestedJudgeComment =
     activeJudgeRecommendation && suggestedJudgeAction ? buildJudgeAdvisoryComment(activeJudgeRecommendation) : ''
+
+  useEffect(() => {
+    if (phaseContextActions.length === 0) {
+      setPhaseContextActionId('')
+      return
+    }
+    setPhaseContextActionId((current) => (
+      current && phaseContextActions.some((action) => action.id === current)
+        ? current
+        : (primaryExecutableAction?.id ?? phaseContextActions[0].id)
+    ))
+  }, [phaseContextActions, primaryExecutableAction])
+
   useEffect(() => {
     if (!targetDetail || !selectedTaxonomy || !targetRun || selectedArtifact) return
 
@@ -3000,7 +3363,7 @@ export default function App() {
             </button>
           ))}
         </div>
-        <div className="space-y-2">
+        <div className="space-y-3">
           {isLoadingRuns ? (
             Array.from({ length: 8 }).map((_, i) => (
               <div key={i} className="h-24 w-full animate-pulse rounded border border-zinc-800 bg-zinc-900/20" />
@@ -3022,27 +3385,69 @@ export default function App() {
           ) : filteredRuns.length === 0 ? (
             <div className="py-12 text-center text-xs text-zinc-600">No runs found.</div>
           ) : (
-            filteredRuns.map((run) => (
-              <button
-                key={`${run.taxonomy}-${run.name}`}
-                onClick={() => void fetchDetail(run.taxonomy, run.name)}
-                className={`w-full rounded border p-3 text-left ${selectedRun === run.name ? 'border-indigo-500/40 bg-indigo-500/10' : 'border-zinc-800 bg-zinc-900/40 hover:bg-zinc-900'}`}
-              >
-                <div className="mb-2 text-xs text-zinc-500">{run.taxonomy}</div>
-                <div className="mb-2 break-words text-sm font-medium">{run.name}</div>
-                <div className="mb-2 text-[11px] text-zinc-500">Next: {run.next_role}</div>
-                <div className="flex flex-wrap items-center gap-1">
-                  <PhaseBadge phase={run.phase} />
-                  <PriorityBadge priority={run.priority} />
-                  <CountBadge count={run.child_count} />
-                  <ReworkBadge count={[run.has_plan_review, run.has_build_review, run.has_review_review, run.has_improve_review].filter(Boolean).length} />
-                  {run.human_blocker_active && (
-                    <span className="rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
-                      HUMAN BLOCKER
-                    </span>
-                  )}
+            taxonomySections.map((section) => (
+              <section key={section.taxonomy} className={`rounded-xl border ${section.pinned ? 'border-indigo-500/30 bg-indigo-500/5' : 'border-zinc-800 bg-zinc-950/30'}`}>
+                <div className="flex items-center justify-between gap-2 px-3 py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleOpenTaxonomy(section.taxonomy)}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase ${section.pinned ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-100' : 'border-zinc-700 bg-zinc-900 text-zinc-400'}`}>
+                        {section.taxonomy}
+                      </span>
+                      <span className="truncate text-[11px] font-bold uppercase tracking-[0.16em] text-zinc-400">{section.label}</span>
+                    </div>
+                    <div className="mt-1 text-[10px] text-zinc-600">
+                      {section.runs.length} run{section.runs.length === 1 ? '' : 's'}{section.pinned ? ' / pinned' : ''}
+                    </div>
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => togglePinnedTaxonomy(section.taxonomy)}
+                      className={`rounded border p-1.5 ${section.pinned ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-100' : 'border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-200'}`}
+                      title={section.pinned ? 'Unpin taxonomy' : 'Pin taxonomy'}
+                      aria-label={section.pinned ? 'Unpin taxonomy' : 'Pin taxonomy'}
+                    >
+                      <Pin size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleOpenTaxonomy(section.taxonomy)}
+                      className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-semibold text-zinc-400"
+                    >
+                      {section.open ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
                 </div>
-              </button>
+                {section.open && (
+                  <div className="space-y-2 border-t border-zinc-800/80 px-2 pb-2 pt-2">
+                    {section.runs.map((run) => (
+                      <button
+                        key={`${run.taxonomy}-${run.name}`}
+                        onClick={() => void fetchDetail(run.taxonomy, run.name)}
+                        className={`w-full rounded-lg border p-3 text-left ${selectedRun === run.name ? 'border-indigo-500/40 bg-indigo-500/10' : 'border-zinc-800 bg-zinc-900/40 hover:bg-zinc-900'}`}
+                      >
+                        <div className="mb-2 break-words text-sm font-medium">{run.name}</div>
+                        <div className="mb-2 text-[11px] text-zinc-500">Next: {run.next_role}</div>
+                        <div className="flex flex-wrap items-center gap-1">
+                          <PhaseBadge phase={run.phase} />
+                          <PriorityBadge priority={run.priority} />
+                          <CountBadge count={run.child_count} />
+                          <ReworkBadge count={[run.has_plan_review, run.has_build_review, run.has_review_review, run.has_improve_review].filter(Boolean).length} />
+                          {run.human_blocker_active && (
+                            <span className="rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
+                              HUMAN BLOCKER
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
             ))
           )}
         </div>
@@ -3067,10 +3472,9 @@ export default function App() {
         ) : (
           <>
             <section
-              onScroll={(e) => handleWorkspaceScroll(e.currentTarget.scrollTop)}
               className={`min-h-0 min-w-0 border-b border-zinc-800 p-4 overflow-y-auto 2xl:border-b-0 ${workspaceTab === 'detail' ? 'xl:w-[28rem] xl:shrink-0 xl:border-r 2xl:w-[min(36rem,35vw)]' : 'flex-1'}`}
             >
-              <div className={`sticky top-0 z-20 -mx-4 mb-4 border-b border-zinc-800 bg-zinc-950/95 px-4 backdrop-blur transition-all duration-300 ${headerCompact ? 'pb-2' : 'pb-4'}`}>
+              <div className="sticky top-0 z-20 -mx-4 mb-4 border-b border-zinc-800 bg-zinc-950/95 px-4 pb-4 backdrop-blur">
                 {/* Stable Core: Badges and Title */}
                 <div className="flex items-start justify-between gap-3">
                   {!sidebarOpen && (
@@ -3088,7 +3492,7 @@ export default function App() {
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <PhaseBadge phase={targetDetail?.phase ?? detail.phase} />
                       <PriorityBadge priority={targetDetail?.priority ?? detail.priority} />
-                      {headerCompact && targetDetail && targetDetail.name !== detail.name && (
+                      {targetDetail && targetDetail.name !== detail.name && (
                         <span className="flex items-center gap-1 rounded bg-indigo-500/25 border border-indigo-500/40 px-1.5 py-0.5 font-bold text-indigo-100 text-[10px]">
                           <Terminal size={10} />
                           CHILD
@@ -3096,10 +3500,10 @@ export default function App() {
                       )}
                     </div>
                     <div className="flex flex-col min-w-0">
-                      <span className={`mb-0.5 truncate leading-tight text-zinc-500 transition-all duration-300 ${headerCompact ? 'text-[10px]' : 'text-xs'}`} title={targetDetail?.name ?? detail.name}>
+                      <span className="mb-0.5 truncate leading-tight text-xs text-zinc-500" title={targetDetail?.name ?? detail.name}>
                         {(targetDetail?.name ?? detail.name).split('_')[0]}
                       </span>
-                      <h2 className={`truncate font-bold leading-snug transition-all duration-300 ${headerCompact ? 'text-base' : 'text-lg'}`}>
+                      <h2 className="truncate text-base font-bold leading-snug">
                         {(targetDetail?.name ?? detail.name).split('_').slice(1).join('_') || (targetDetail?.name ?? detail.name)}
                       </h2>
                     </div>
@@ -3113,24 +3517,30 @@ export default function App() {
                   hasBuildReview={(targetDetail?.artifacts ?? detail.artifacts).some((a) => a.name === 'build_review.md' && a.exists)}
                   hasReviewReview={(targetDetail?.artifacts ?? detail.artifacts).some((a) => a.name === 'review_review.md' && a.exists)}
                   hasImproveReview={(targetDetail?.artifacts ?? detail.artifacts).some((a) => a.name === 'improve_review.md' && a.exists)}
-                  compact={headerCompact}
+                  compact
                 />
 
                 {workspaceTab !== 'agent-os' && (
-                  <>
-                    {/* Condensed Command View (Visible when compact) */}
-                    <div className={`mt-1 flex items-center justify-between rounded border border-indigo-500/20 bg-indigo-500/5 px-2 py-1 transition-all duration-500 ${headerCompact ? 'opacity-100 max-h-10' : 'opacity-0 max-h-0 overflow-hidden mt-0 border-none'}`}>
-                       <div className="flex items-center gap-2 text-indigo-300 min-w-0">
-                         <Terminal size={12} />
-                         <span className="truncate font-mono text-[10px]">{targetDetail?.operator_command ?? ''}</span>
-                       </div>
-                       <CopyButton text={targetDetail?.operator_command ?? ''} />
+                  <div className="mt-3 rounded border border-indigo-500/30 bg-indigo-500/10 p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-indigo-300">
+                        <Terminal size={14} />
+                        <span className="text-xs font-bold uppercase">
+                          Primary Command
+                          {targetDetail && (
+                            <span className="ml-2 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                              {targetDetail.name === detail.name ? 'PARENT' : targetDetail.name.split('/').slice(-1)[0]}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <CopyButton text={targetDetail?.operator_command ?? ''} />
                     </div>
-                  </>
+                    <div className="whitespace-pre-wrap break-words rounded bg-black/30 p-2 font-mono text-xs line-clamp-2">{targetDetail?.operator_command ?? ''}</div>
+                  </div>
                 )}
 
-                {/* Collapsible Supplemental Section (Hidden when compact) */}
-                <div className={`overflow-hidden transition-all duration-500 ease-in-out ${headerCompact ? 'max-h-0 opacity-0 pointer-events-none' : 'max-h-[600px] opacity-100'}`}>
+                <div className="overflow-hidden">
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
                     <span>Next: {targetDetail?.next_role ?? detail.next_role}</span>
                     {targetDetail && targetDetail.name !== detail.name && (
@@ -3147,31 +3557,72 @@ export default function App() {
                     ) : null
                   })()}
                   <SatisfiabilityWarning reason={targetDetail?.decision_reason ?? detail.decision_reason} />
-                  
-                  {workspaceTab !== 'agent-os' && (
-                    <div className="mt-3 rounded border border-indigo-500/30 bg-indigo-500/10 p-3">
-                      <div className="mb-2 flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-indigo-300">
-                          <Terminal size={14} />
-                          <span className="text-xs font-bold uppercase">
-                            Primary Command
-                            {targetDetail && (
-                              <span className="ml-2 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300">
-                                {targetDetail.name === detail.name ? 'PARENT' : targetDetail.name.split('/').slice(-1)[0]}
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                        <CopyButton text={targetDetail?.operator_command ?? ''} />
-                      </div>
-                      <div className="whitespace-pre-wrap break-words rounded bg-black/30 p-2 font-mono text-xs line-clamp-2">{targetDetail?.operator_command ?? ''}</div>
-                    </div>
-                  )}
-
                 </div>
 
-                {/* Fixed Tab Bar Region */}
-                <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800/70 pt-2">
+                {runLineage.length > 1 && (
+                  <div className="mt-3 space-y-2 border-t border-zinc-800/70 pt-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600">Run Lineage</div>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentViewOpen((open) => !open)}
+                        className="rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-[10px] font-semibold text-zinc-400"
+                      >
+                        {currentViewOpen ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
+                    {currentViewOpen && (
+                      <div className="space-y-2">
+                        {runLineage.map((entry) => (
+                          <button
+                            key={entry.name}
+                            onClick={() => {
+                              setCurrentViewOpen(false)
+                              void fetchTargetDetail(detail.taxonomy, entry.name)
+                            }}
+                            className={`w-full rounded-xl border px-3 py-3 text-left ${
+                              entry.isSelected
+                                ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-100'
+                                : 'border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-900'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className={`rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase ${entry.isParent ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-200'}`}>
+                                    {entry.label}
+                                  </span>
+                                  {entry.isSelected && (
+                                    <span className="rounded border border-indigo-400/40 bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-indigo-100">
+                                      Viewing
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-2 truncate text-sm font-semibold text-zinc-100">{entry.displayName}</div>
+                                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+                                  <span>{entry.phase}</span>
+                                  <span className="opacity-40">/</span>
+                                  <span>{entry.nextRole}</span>
+                                  {entry.hasChildren && (
+                                    <>
+                                      <span className="opacity-40">/</span>
+                                      <span>has children</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="shrink-0 flex flex-col items-end gap-1">
+                                <PhaseBadge phase={entry.phase} />
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-zinc-800/70 pt-3">
                   <button
                     onClick={() => openAgentOSWorkspace(selectedTaxonomy, targetRun)}
                     className={`rounded border px-3 py-1.5 text-xs font-bold transition-all duration-200 ${workspaceTab === 'agent-os' ? 'border-emerald-400 bg-emerald-500/20 text-emerald-100' : 'border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'}`}
@@ -3196,39 +3647,17 @@ export default function App() {
                   >
                     Activity
                   </button>
+                  {((targetDetail?.artifacts ?? detail.artifacts).some((artifact) => artifact.exists)) && (
+                    <button
+                      type="button"
+                      onClick={() => openArtifactReferenceModal()}
+                      className="ml-auto inline-flex items-center gap-2 rounded border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-bold text-indigo-100 transition-colors hover:bg-indigo-500/20"
+                    >
+                      <FileText size={14} />
+                      Artifacts
+                    </button>
+                  )}
                 </div>
-
-                {targetTabs.length > 1 && (
-                  <div className="mt-3 space-y-2 border-t border-zinc-800/70 pt-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-600">Current View</div>
-                      <button
-                        type="button"
-                        onClick={() => setCurrentViewOpen((open) => !open)}
-                        className="rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-[10px] font-semibold text-zinc-400"
-                      >
-                        {currentViewOpen ? 'Hide' : 'Show'}
-                      </button>
-                    </div>
-                    {currentViewOpen && (
-                      <div className="flex flex-wrap gap-2">
-                        {targetTabs.map((tab) => (
-                          <button
-                            key={tab.name}
-                            onClick={() => void fetchTargetDetail(detail.taxonomy, tab.name)}
-                            className={`rounded border px-3 py-1.5 text-xs font-bold ${
-                              targetRun === tab.name
-                                ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-200'
-                                : 'border-zinc-800 bg-zinc-900/60 text-zinc-400'
-                            }`}
-                          >
-                            {targetRun === tab.name ? `Viewing ${tab.label}` : `Open ${tab.label}`}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
 
               {workspaceTab === 'detail' ? (
@@ -3281,9 +3710,12 @@ export default function App() {
                     </div>
 
                     <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
-                      <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Run Topology</div>
+                      <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500">Topology Summary</div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                          parent
+                        </span>
+                        <span className="rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-bold text-indigo-300">
                           {childRuns.length} child run{childRuns.length === 1 ? '' : 's'}
                         </span>
                         {activeChildName && (
@@ -3292,24 +3724,10 @@ export default function App() {
                           </span>
                         )}
                       </div>
-                      {childRuns.length > 0 ? (
-                        <div className="mt-3 space-y-2">
-                          {childRuns.slice(0, 4).map((child) => (
-                            <div key={child.name} className="flex items-center justify-between gap-3 rounded border border-zinc-800 bg-black/20 px-3 py-2">
-                              <div className="min-w-0">
-                                <div className="truncate text-xs font-semibold text-zinc-200">{child.child_name}</div>
-                                <div className="truncate text-[11px] text-zinc-500">{child.phase} / {child.next_role}</div>
-                              </div>
-                              <button
-                                onClick={() => void fetchTargetDetail(detail.taxonomy, child.name)}
-                                className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-bold text-zinc-200"
-                              >
-                                Open
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
+                      <div className="mt-3 text-xs text-zinc-400">
+                        Parent and child runs are now selectable from the lineage list above. The active run stays highlighted there with its phase and next role.
+                      </div>
+                      {childRuns.length === 0 && (
                         <div className="mt-3 text-xs text-zinc-500">No child runs for this target.</div>
                       )}
                     </div>
@@ -3615,6 +4033,15 @@ export default function App() {
                                 <div className="line-clamp-2 text-[11px] text-zinc-500">{parsed.primary}</div>
                               ) : null
                             })()}
+                            <div className="pt-1">
+                              <button
+                                type="button"
+                                onClick={openJudgeChat}
+                                className="rounded border border-fuchsia-500/40 bg-fuchsia-500/10 px-3 py-1.5 text-[11px] font-semibold text-fuchsia-200 hover:bg-fuchsia-500/20"
+                              >
+                                AI と相談する
+                              </button>
+                            </div>
                             {activeJudgeRecommendation && (
                               <div className="rounded border border-fuchsia-500/25 bg-fuchsia-500/10 p-2.5">
                                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -3783,33 +4210,84 @@ export default function App() {
                                 </div>
                               </div>
                             )}
-                            {primaryExecutableAction && selectedTaxonomy && activeTargetName ? (
+                            {selectedPhaseContextAction && selectedTaxonomy && activeTargetName ? (
                               <div className="rounded border border-emerald-500/25 bg-black/20 p-2.5">
                                 <div className="mb-2 flex items-center justify-between gap-2">
                                   <div>
-                                    <div className="text-[10px] uppercase tracking-wide text-emerald-300">Next Step</div>
-                                    <div className="mt-0.5 text-[11px] font-semibold text-zinc-100">{primaryExecutableAction.label}</div>
+                                    <div className="text-[10px] uppercase tracking-wide text-emerald-300">Next Action</div>
+                                    <div className="mt-0.5 text-[11px] font-semibold text-zinc-100">{selectedPhaseContextAction.label}</div>
                                   </div>
-                                  <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase text-emerald-100">
-                                    Recommended
-                                  </span>
+                                  {selectedPhaseContextAction.id === primaryExecutableAction?.id && (
+                                    <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase text-emerald-100">
+                                      Recommended
+                                    </span>
+                                  )}
                                 </div>
-                                <div className="mb-2 text-[11px] text-zinc-400">{primaryExecutableAction.description}</div>
+                                <select
+                                  value={selectedPhaseContextAction.id}
+                                  onChange={(e) => setPhaseContextActionId(e.target.value)}
+                                  className="mb-2 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-[11px] text-zinc-100"
+                                >
+                                  {phaseContextActions.map((action) => (
+                                    <option key={action.id} value={action.id}>
+                                      {action.primary ? '[Recommended] ' : ''}{action.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <div className="mb-2 text-[11px] text-zinc-400">{selectedPhaseContextAction.description}</div>
+                                {selectedPhaseContextAction.comment_artifact && (
+                                  <div className="mb-2 rounded border border-zinc-800 bg-zinc-950/50 p-2">
+                                    <div className="mb-1 text-[10px] text-zinc-500">
+                                      Comment artifact: <span className="font-mono text-zinc-300">{selectedPhaseContextAction.comment_artifact}</span>
+                                    </div>
+                                    <textarea
+                                      value={rerunComments[selectedPhaseContextAction.id] ?? ''}
+                                      onChange={(e) => {
+                                        const next = e.target.value
+                                        setRerunComments((current) => ({ ...current, [selectedPhaseContextAction.id]: next }))
+                                        if (savedCommentByAction[selectedPhaseContextAction.id] && savedCommentByAction[selectedPhaseContextAction.id] !== next.trim()) {
+                                          setSavedCommentByAction((current) => {
+                                            const copy = { ...current }
+                                            delete copy[selectedPhaseContextAction.id]
+                                            return copy
+                                          })
+                                        }
+                                      }}
+                                      className="min-h-24 w-full rounded border border-zinc-700 bg-zinc-950 p-2 text-[11px] text-zinc-200"
+                                      placeholder={`Comment to save into ${selectedPhaseContextAction.comment_artifact}`}
+                                    />
+                                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                                      <div className="text-[10px] text-zinc-500">
+                                        {savedCommentByAction[selectedPhaseContextAction.id] === (rerunComments[selectedPhaseContextAction.id] ?? '').trim() && (rerunComments[selectedPhaseContextAction.id] ?? '').trim() !== ''
+                                          ? 'Saved to artifact.'
+                                          : 'Save the comment before running when feedback is required.'}
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => void saveRerunComment(selectedPhaseContextAction, selectedTaxonomy, activeTargetName)}
+                                        disabled={savingActionId !== null || ((rerunComments[selectedPhaseContextAction.id] ?? '').trim() === '') || savedCommentByAction[selectedPhaseContextAction.id] === (rerunComments[selectedPhaseContextAction.id] ?? '').trim()}
+                                        className="rounded border border-emerald-500/30 bg-emerald-500/15 px-3 py-1.5 text-[10px] font-semibold text-emerald-100 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+                                      >
+                                        {savingActionId === selectedPhaseContextAction.id ? 'Saving...' : 'Save Comment'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
                                 <button
                                   type="button"
-                                  onClick={() => void executeAction(primaryExecutableAction, selectedTaxonomy, activeTargetName)}
-                                  disabled={!primaryExecutableAction.enabled || isActiveRunBusy}
+                                  onClick={() => void executeAction(selectedPhaseContextAction, selectedTaxonomy, activeTargetName)}
+                                  disabled={!selectedPhaseContextAction.enabled || isActiveRunBusy}
                                   className="w-full rounded border border-emerald-500/30 bg-emerald-500/15 px-3 py-2 text-[11px] font-bold text-emerald-50 transition-colors hover:bg-emerald-500/20 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
                                 >
-                                  {isPrimaryActionRunning ? 'Running...' : primaryExecutableAction.label}
+                                  {activeRunExecutionId === selectedPhaseContextAction.id ? 'Running...' : selectedPhaseContextAction.label}
                                 </button>
-                                {activeOperatorCommand && (
+                                {selectedPhaseContextAction.command && (
                                   <div className="mt-2 rounded border border-zinc-800 bg-zinc-950/50 p-2">
                                     <div className="mb-1 flex items-start justify-between gap-2 text-[10px] text-zinc-500">
-                                      <span>Recommended Command</span>
-                                      <CopyButton text={activeOperatorCommand} />
+                                      <span>Action Command</span>
+                                      <CopyButton text={selectedPhaseContextAction.command} />
                                     </div>
-                                    <div className="line-clamp-2 whitespace-pre-wrap break-words font-mono text-[10px] text-zinc-300">{activeOperatorCommand}</div>
+                                    <div className="line-clamp-2 whitespace-pre-wrap break-words font-mono text-[10px] text-zinc-300">{selectedPhaseContextAction.command}</div>
                                   </div>
                                 )}
                               </div>
@@ -3820,6 +4298,51 @@ export default function App() {
                                   <CopyButton text={activeOperatorCommand} />
                                 </div>
                                 <div className="line-clamp-3 whitespace-pre-wrap break-words font-mono text-[10px] text-zinc-300">{activeOperatorCommand}</div>
+                              </div>
+                            )}
+                            {selectedTaxonomy && activeTargetName && (
+                              <div className="rounded border border-cyan-500/20 bg-cyan-500/5 p-2.5">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <div>
+                                    <div className="text-[10px] uppercase tracking-wide text-cyan-300">Auto-Loop</div>
+                                    <div className="mt-0.5 text-[11px] text-zinc-400">Run the default APSF loop for this run or child run.</div>
+                                  </div>
+                                  <span className={`rounded border px-2 py-0.5 text-[9px] font-bold uppercase ${
+                                    autoLoopStatus?.running
+                                      ? autoLoopStatus.stop_pending
+                                        ? 'border-amber-400/30 bg-amber-500/10 text-amber-100'
+                                        : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'
+                                      : 'border-zinc-700 bg-zinc-900 text-zinc-400'
+                                  }`}>
+                                    {autoLoopLoading ? 'Checking' : autoLoopStatus?.running ? (autoLoopStatus.stop_pending ? 'Stop Pending' : 'Running') : 'Idle'}
+                                  </span>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => void startAutoLoop(selectedTaxonomy, activeTargetName)}
+                                    disabled={autoLoopLoading || autoLoopMutating !== null || autoLoopStatus?.running === true}
+                                    className="rounded border border-cyan-500/30 bg-cyan-500/15 px-3 py-1.5 text-[10px] font-semibold text-cyan-100 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+                                  >
+                                    {autoLoopMutating === 'start' ? 'Starting...' : 'Start Auto-Loop'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void requestAutoLoopStop(selectedTaxonomy, activeTargetName)}
+                                    disabled={autoLoopLoading || autoLoopMutating !== null || autoLoopStatus?.running !== true || autoLoopStatus?.stop_pending === true}
+                                    className="rounded border border-amber-500/30 bg-amber-500/15 px-3 py-1.5 text-[10px] font-semibold text-amber-100 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+                                  >
+                                    {autoLoopMutating === 'stop' ? 'Requesting...' : 'Request Stop'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void cancelAutoLoopStop(selectedTaxonomy, activeTargetName)}
+                                    disabled={autoLoopLoading || autoLoopMutating !== null || autoLoopStatus?.stop_pending !== true}
+                                    className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-[10px] font-semibold text-zinc-200 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+                                  >
+                                    {autoLoopMutating === 'cancel' ? 'Cancelling...' : 'Cancel Stop'}
+                                  </button>
+                                </div>
                               </div>
                             )}
                           </div>
@@ -4109,7 +4632,16 @@ export default function App() {
                               <tbody className="divide-y divide-zinc-800/50">
                                 {agentOSData.artifact_manifest.map((e) => (
                                   <tr key={e.artifact_name} className="text-zinc-300">
-                                    <td className="py-1.5 pr-3 font-mono font-semibold text-zinc-100">{e.artifact_name}</td>
+                                    <td className="py-1.5 pr-3">
+                                      <button
+                                        type="button"
+                                        onClick={() => openArtifactReferenceModal(e.artifact_name)}
+                                        className="text-left"
+                                      >
+                                        <div className="font-semibold text-zinc-100 hover:text-white">{getArtifactDisplayMeta(e.artifact_name).title}</div>
+                                        <div className="font-mono text-[10px] text-zinc-500">{e.artifact_name}</div>
+                                      </button>
+                                    </td>
                                     <td className="py-1.5 pr-3 text-zinc-400">{e.written_by || '—'}</td>
                                     <td className="py-1.5 pr-3">
                                       <span className={`rounded px-1.5 py-0.5 font-semibold ${e.status === 'generated' ? 'bg-blue-500/15 text-blue-300' : 'bg-zinc-700/50 text-zinc-400'}`}>
@@ -4761,97 +5293,6 @@ export default function App() {
               )}
             </section>
 
-            {workspaceTab === 'detail' && (
-            <section className="min-h-0 shrink-0 border-b border-zinc-800 p-4 overflow-y-auto xl:w-72 xl:border-b-0 xl:border-r 2xl:w-80">
-              <div className="sticky top-0 z-10 -mx-4 mb-3 border-b border-zinc-800 bg-zinc-950/95 px-4 pb-3 backdrop-blur">
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="text-xs font-bold uppercase text-zinc-500">Artifacts</div>
-                  {targetDetail && (
-                    <div className="rounded bg-zinc-900 px-2 py-1 text-[10px] font-bold text-zinc-400">
-                      {targetDetail.name === detail.name ? 'PARENT' : targetDetail.name.split('/').slice(-1)[0]}
-                    </div>
-                  )}
-                </div>
-
-                {/* Readiness hint: shown when the expected artifact exists but phase still requires it */}
-                {(() => {
-                  const phase = targetDetail?.phase
-                  const expectedArtifact = phase ? PHASE_TO_ARTIFACT[phase] : null
-                  if (!expectedArtifact) return null
-                  const artifact = (targetDetail?.artifacts ?? []).find((a) => a.name === expectedArtifact)
-                  if (!artifact?.exists) return null
-                  const reason = targetDetail?.decision_reason
-                  if (!reason) return null
-                  const parsed = parseSatisfiabilityReason(reason)
-                  const label = splitArtifactLabel(expectedArtifact)
-                  return (
-                    <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2.5">
-                      <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400">Readiness Note</div>
-                      {parsed.primary ? (
-                        <div className="text-xs text-amber-200/70">{parsed.primary}</div>
-                      ) : null}
-                      <SatisfiabilityWarning reason={reason} />
-                      <div className="mt-2 rounded border border-amber-500/15 bg-black/20 p-2">
-                        <div className="text-[10px] uppercase tracking-wide text-amber-300/60">Focus Artifact</div>
-                        <div className="mt-1 text-xs font-semibold text-amber-100">
-                          <span className="text-amber-300/60">{label.prefix}</span>
-                          <span>{label.suffix || expectedArtifact}</span>
-                        </div>
-                        <div className="mt-1 text-[10px] text-amber-300/60">
-                          This file exists, but the current phase still suggests it may need stronger content before the run is ready.
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })()}
-              </div>
-
-              <div className="space-y-2">
-                {(targetDetail?.artifacts ?? []).map((artifact) => (
-                  (() => {
-                    const label = splitArtifactLabel(artifact.name)
-                    return (
-                      <button
-                        key={artifact.name}
-                        disabled={!artifact.exists}
-                        onClick={() => void fetchArtifact(artifact.name)}
-                        className={`flex w-full items-center justify-between rounded border p-2 text-left ${selectedArtifact === artifact.name ? 'border-indigo-400/60 bg-indigo-500/20 text-indigo-50' : 'border-zinc-800 bg-zinc-900/30'} ${!artifact.exists ? 'opacity-40' : ''}`}
-                      >
-                        <div className="flex items-center gap-2 overflow-hidden">
-                          <FileText size={14} />
-                          <div className="min-w-0">
-                            {label.prefix && (
-                              <div className={`truncate text-[10px] uppercase tracking-wide text-zinc-500 ${selectedArtifact === artifact.name ? 'text-indigo-200/70' : ''}`} title={artifact.name}>
-                                {label.prefix}
-                              </div>
-                            )}
-                            <div className={`truncate text-xs ${selectedArtifact === artifact.name ? 'font-semibold' : ''}`} title={artifact.name}>
-                              {label.suffix || artifact.name}
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  })()
-                ))}
-              </div>
-            </section>
-            )}
-
-            <section className={`min-h-0 min-w-0 overflow-y-auto p-6 ${workspaceTab === 'detail' ? 'flex-1' : 'hidden lg:hidden'}`}>
-              {selectedArtifact ? (
-                <>
-                  <div className="sticky top-0 z-10 -mx-6 mb-4 border-b border-zinc-800 bg-zinc-950/95 px-6 py-3 text-sm font-semibold backdrop-blur">
-                    {selectedArtifact}
-                  </div>
-                  <div className="prose prose-invert prose-zinc max-w-none">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifactContent}</ReactMarkdown>
-                  </div>
-                </>
-              ) : (
-                <div className="flex h-full items-center justify-center text-zinc-500">Select an artifact to preview.</div>
-              )}
-            </section>
           </>
         )}
       </main>
@@ -4980,6 +5421,16 @@ export default function App() {
             setSpecialistModalOpen(true)
           }}
           onCreated={handleCreatedSpecialist}
+        />
+      )}
+      {artifactModalOpen && detail && (
+        <ArtifactReferenceModal
+          artifacts={targetDetail?.artifacts ?? detail.artifacts}
+          selectedArtifact={selectedArtifact}
+          artifactContent={artifactContent}
+          runName={targetDetail?.name ?? detail.name}
+          onClose={() => setArtifactModalOpen(false)}
+          onSelect={(name) => void fetchArtifact(name)}
         />
       )}
       {selectedExecutionLog && <ExecutionLogModal job={selectedExecutionLog} onClose={() => setSelectedExecutionLog(null)} />}

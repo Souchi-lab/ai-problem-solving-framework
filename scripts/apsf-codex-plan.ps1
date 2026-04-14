@@ -81,6 +81,14 @@ function Get-TextHash {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+function Test-CodexModelOverride {
+    param([string]$Model)
+    if ([string]::IsNullOrWhiteSpace($Model)) {
+        return $false
+    }
+    return $Model -match '^[A-Za-z0-9._:-]+$'
+}
+
 $phaseBefore = Get-Phase $Run
 if ($phaseBefore -ne "PLAN_NEEDED") {
     Write-Host "[Stop] Current phase is '$phaseBefore', not PLAN_NEEDED." -ForegroundColor Yellow
@@ -101,6 +109,10 @@ if ($assignmentHuman) {
 
 if (-not [string]::IsNullOrWhiteSpace($assignmentProvider) -and $assignmentProvider -ne "unset" -and $assignmentProvider -ne "openai") {
     Write-Host "[Warn] model-assignment.md specifies provider=$assignmentProvider, but codex-cli bridge is OpenAI/Codex-oriented." -ForegroundColor Yellow
+    Write-Host "       Proceeding with Codex CLI default model/profile." -ForegroundColor DarkGray
+    $assignmentModel = ""
+} elseif (-not (Test-CodexModelOverride $assignmentModel) -and -not [string]::IsNullOrWhiteSpace($assignmentModel)) {
+    Write-Host "[Warn] model-assignment.md model='$assignmentModel' is not a Codex CLI model id." -ForegroundColor Yellow
     Write-Host "       Proceeding with Codex CLI default model/profile." -ForegroundColor DarkGray
     $assignmentModel = ""
 }
@@ -189,8 +201,29 @@ Write-Host "[1/1] Invoking codex plan bridge..." -ForegroundColor DarkGray
 Write-Host ""
 
 try {
-    $codexOutput = $bridgePrompt | & $codexPath @codexArgs 2>&1 | Tee-Object -Variable _codexCaptured
-    $exitCode = $LASTEXITCODE
+    $stdinPath = [System.IO.Path]::GetTempFileName()
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllText($stdinPath, $bridgePrompt, [System.Text.Encoding]::UTF8)
+        $quotedCodexPath = '"' + $codexPath + '"'
+        $quotedArgs = @($codexArgs | ForEach-Object {
+            $arg = [string]$_
+            '"' + ($arg -replace '"', '\"') + '"'
+        }) -join " "
+        $cmdLine = "$quotedCodexPath $quotedArgs < `"$stdinPath`" > `"$stdoutPath`" 2> `"$stderrPath`""
+        & cmd.exe /d /c $cmdLine
+        $exitCode = $LASTEXITCODE
+        $stdoutLines = if (Test-Path $stdoutPath) { Get-Content $stdoutPath -ErrorAction SilentlyContinue } else { @() }
+        $stderrLines = if (Test-Path $stderrPath) { Get-Content $stderrPath -ErrorAction SilentlyContinue } else { @() }
+        $codexOutput = @($stdoutLines + $stderrLines)
+    } finally {
+        foreach ($path in @($stdinPath, $stdoutPath, $stderrPath)) {
+            if ($path -and (Test-Path $path)) {
+                Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 } catch {
     $exceptionText = ($_ | Out-String).Trim()
     if (-not [string]::IsNullOrWhiteSpace($exceptionText)) {

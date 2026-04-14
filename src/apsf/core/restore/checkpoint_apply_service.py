@@ -34,6 +34,11 @@ from .restore_gate import RestoreGate, RestoreRequest
 RECOVERY_BYPASS_CONTRACT = """
 CheckpointApplyService is the single explicit exception to TransitionService.
 
+Relationship to TransitionService actor bypass:
+- TransitionService unconstrained actors may bypass phase rule validation only.
+- They still persist through TransitionService and do not become direct writers.
+- This module is the separate recovery-only persistence bypass.
+
 Allowed bypass:
 - recovery-time restore after RestoreGate approval
 - current run only

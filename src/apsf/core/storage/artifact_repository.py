@@ -27,7 +27,6 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-
 class FileLockError(Exception):
     """別のプロセスが同じファイルに書き込み中のときに raise される。"""
 

@@ -1,19 +1,6 @@
-"""
-test_transcript_generator.py — TranscriptGenerator のユニットテスト
-
-テスト方針:
-- ファイルが順序どおり連結される
-- 欠落ファイルがあっても正常生成される
-- transcript.md 自身を誤って読み込まない
-- 出力ファイルが生成される
-- 生成内容に必要な構造が含まれる
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 from apsf.legacy.orchestration.transcript_generator import (
     TRANSCRIPT_SOURCE_ORDER,
@@ -21,24 +8,21 @@ from apsf.legacy.orchestration.transcript_generator import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
-
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
 
 
 def _create_run(run_dir: Path, filenames: list[str]) -> None:
-    """指定ファイル群を run_dir に作成する。"""
     for filename in filenames:
         _write(run_dir / filename, f"# {filename}\n\nContent of {filename}.\n")
 
 
-# ---------------------------------------------------------------------------
-# TRANSCRIPT_SOURCE_ORDER constant
-# ---------------------------------------------------------------------------
+def _strip_generated_line(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines() if not line.startswith("Generated: ")
+    )
+
 
 class TestSourceOrder:
     def test_order_is_defined(self) -> None:
@@ -64,10 +48,6 @@ class TestSourceOrder:
         filenames = [f for f, _ in TRANSCRIPT_SOURCE_ORDER]
         assert filenames.index("build.md") < filenames.index("review.md")
 
-
-# ---------------------------------------------------------------------------
-# generate()
-# ---------------------------------------------------------------------------
 
 class TestGenerate:
     def test_returns_string(self, tmp_path: Path) -> None:
@@ -101,13 +81,12 @@ class TestGenerate:
         _create_run(tmp_path, ["goal.md", "plan.md", "build.md"])
         gen = TranscriptGenerator()
         result = gen.generate(tmp_path)
-        goal_pos  = result.index("goal.md")
-        plan_pos  = result.index("plan.md")
+        goal_pos = result.index("goal.md")
+        plan_pos = result.index("plan.md")
         build_pos = result.index("build.md")
         assert goal_pos < plan_pos < build_pos
 
     def test_missing_files_are_skipped(self, tmp_path: Path) -> None:
-        # Only goal.md exists; plan.md / build.md are absent
         _create_run(tmp_path, ["goal.md"])
         gen = TranscriptGenerator()
         result = gen.generate(tmp_path)
@@ -124,7 +103,6 @@ class TestGenerate:
 
     def test_transcript_itself_not_included(self, tmp_path: Path) -> None:
         _create_run(tmp_path, ["goal.md"])
-        # Simulate existing transcript.md with unique content
         _write(tmp_path / "transcript.md", "EXISTING TRANSCRIPT CONTENT UNIQUE")
         gen = TranscriptGenerator()
         result = gen.generate(tmp_path)
@@ -136,7 +114,6 @@ class TestGenerate:
         assert "No source files found" in result
 
     def test_optional_files_included_when_present(self, tmp_path: Path) -> None:
-        # v0.2 optional files
         _create_run(tmp_path, ["goal.md", "improve-plan.md", "verify.md"])
         gen = TranscriptGenerator()
         result = gen.generate(tmp_path)
@@ -146,19 +123,25 @@ class TestGenerate:
     def test_optional_files_absent_doesnt_cause_error(self, tmp_path: Path) -> None:
         _create_run(tmp_path, ["goal.md", "result.md"])
         gen = TranscriptGenerator()
-        result = gen.generate(tmp_path)  # Should not raise
+        result = gen.generate(tmp_path)
         assert "Goal" in result
+
+    def test_reads_legacy_cp932_artifact(self, tmp_path: Path) -> None:
+        goal_path = tmp_path / "goal.md"
+        legacy_text = "# Goal\n\n\u81ea\u52d5\u30eb\u30fc\u30d7\u7d99\u7d9a\n"
+        goal_path.write_bytes(legacy_text.encode("cp932"))
+
+        gen = TranscriptGenerator()
+        result = gen.generate(tmp_path)
+
+        assert "\u81ea\u52d5\u30eb\u30fc\u30d7\u7d99\u7d9a" in result
 
     def test_includes_secondary_artifact_notice(self, tmp_path: Path) -> None:
         _create_run(tmp_path, ["goal.md"])
         gen = TranscriptGenerator()
         result = gen.generate(tmp_path)
-        assert "二次成果物" in result or "secondary" in result.lower()
+        assert "secondary" in result.lower() or "\u4e8c\u6b21\u6210\u679c\u7269" in result
 
-
-# ---------------------------------------------------------------------------
-# write()
-# ---------------------------------------------------------------------------
 
 class TestWrite:
     def test_creates_transcript_file(self, tmp_path: Path) -> None:
@@ -180,7 +163,7 @@ class TestWrite:
         expected = gen.generate(tmp_path, "my-run")
         gen.write(tmp_path, "my-run")
         actual = (tmp_path / "transcript.md").read_text(encoding="utf-8")
-        assert actual == expected
+        assert _strip_generated_line(actual) == _strip_generated_line(expected)
 
     def test_overwrites_existing_transcript(self, tmp_path: Path) -> None:
         _write(tmp_path / "transcript.md", "OLD CONTENT")
@@ -191,10 +174,6 @@ class TestWrite:
         assert "OLD CONTENT" not in content
         assert "test-run" in content
 
-
-# ---------------------------------------------------------------------------
-# list_sources()
-# ---------------------------------------------------------------------------
 
 class TestListSources:
     def test_returns_list_of_tuples(self, tmp_path: Path) -> None:

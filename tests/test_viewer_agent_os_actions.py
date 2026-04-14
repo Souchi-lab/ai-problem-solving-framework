@@ -5,6 +5,15 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from apsf.core.ownership import (
+    BlockerOwnership,
+    get_transition_outcome,
+    TransitionOutcomeRecord,
+    TransitionType,
+    write_transition_outcome,
+)
 from apsf.core.manifest.manifest_repository import ManifestRepository
 from apsf.viewer import api
 
@@ -15,6 +24,7 @@ def _write_run_state(
     phase: str = "BUILD_NEEDED",
     phase_status: str = "in_progress",
     current_owner: str = "Builder",
+    phase_entered_at: str = "",
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "run_state.json").write_text(
@@ -28,6 +38,58 @@ def _write_run_state(
                 "last_error": "",
                 "active_handoff_id": "",
                 "gate_failures": [],
+                "phase_entered_at": phase_entered_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_judge_advisory(
+    run_dir: Path,
+    *,
+    recommendation: str | None,
+    human_owned_blocker: bool | None,
+    advisory_source: str = "judge_structured",
+    run_id: str | None = None,
+    phase: str = "IMPROVE_NEEDED",
+    source: str = "judge_advisory.json",
+    freshness_token: str | None = None,
+) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "judge_advisory.json").write_text(
+        json.dumps(
+            {
+                "recommendation": recommendation,
+                "human_owned_blocker": human_owned_blocker,
+                "advisory_source": advisory_source,
+                "run_id": run_id or run_dir.name,
+                "generated_at": "2026-04-12T00:00:00+00:00",
+                "phase": phase,
+                "source": source,
+                "freshness_token": freshness_token,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_auto_loop_marker(
+    run_dir: Path,
+    *,
+    pid: int,
+    process_name: str | None = "powershell.exe",
+    started_at: str | None = "2026-04-12T00:00:00+00:00",
+    command_line: str | None = "powershell.exe -File scripts/apsf-auto-loop.ps1 work/run-073",
+) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / ".apsf_loop_pid").write_text(
+        json.dumps(
+            {
+                "pid": pid,
+                "process_name": process_name,
+                "started_at": started_at,
+                "command_line": command_line,
             }
         ),
         encoding="utf-8",
@@ -71,6 +133,321 @@ def test_apply_checkpoint_blocks_when_candidate_not_selected(tmp_path: Path) -> 
 
     assert response.status == "FAILED"
     assert "select a checkpoint candidate first" in response.stderr
+
+
+def test_start_auto_loop_normalizes_legacy_log_to_utf8(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-encoding"
+    _write_run_state(run_dir, phase="BUILD_NEEDED", phase_status="pending", current_owner="Builder")
+    log_path = run_dir / "auto_loop.log"
+    original = "自動ループ継続\n"
+    log_path.write_bytes(original.encode("cp932"))
+
+    class DummyProc:
+        def __init__(self) -> None:
+            self.pid = 4321
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(api, "_resolve_run_dir", lambda taxonomy, run_name: run_dir)
+    monkeypatch.setattr(api, "_is_auto_loop_running", lambda taxonomy, run_name: False)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: DummyProc())
+
+    response = asyncio.run(api.start_auto_loop("work", "run-encoding", api.AutoLoopOptions()))
+
+    assert response["status"] == "started"
+    assert log_path.read_text(encoding="utf-8").startswith(original)
+    api._close_auto_loop_log(api._auto_loop_key("work", "run-encoding"))
+
+
+def test_is_auto_loop_running_validates_pid_marker_with_live_powershell_process(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-loop-marker"
+    _write_auto_loop_marker(run_dir, pid=9999)
+
+    monkeypatch.setattr(api, "_resolve_run_dir", lambda taxonomy, run_name: run_dir)
+    monkeypatch.setattr(api, "_pid_exists", lambda pid: pid == 9999)
+    monkeypatch.setattr(
+        api,
+        "_process_identity_for_pid",
+        lambda pid: {
+            "pid": pid,
+            "name": "powershell.exe",
+            "started_at": "2026-04-12T00:00:00+00:00",
+            "command_line": "powershell.exe -File scripts/apsf-auto-loop.ps1 work/run-073",
+        },
+    )
+
+    assert api._is_auto_loop_running("work", "run-loop-marker") is True
+
+
+def test_is_auto_loop_running_returns_false_when_pid_marker_is_stale(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-loop-stale"
+    _write_auto_loop_marker(run_dir, pid=9999)
+
+    monkeypatch.setattr(api, "_resolve_run_dir", lambda taxonomy, run_name: run_dir)
+    monkeypatch.setattr(api, "_pid_exists", lambda pid: False)
+
+    assert api._is_auto_loop_running("work", "run-loop-stale") is False
+
+
+def test_is_auto_loop_running_rejects_pid_reuse_for_non_powershell_process(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-loop-pid-reuse"
+    _write_auto_loop_marker(run_dir, pid=9999)
+
+    monkeypatch.setattr(api, "_resolve_run_dir", lambda taxonomy, run_name: run_dir)
+    monkeypatch.setattr(api, "_pid_exists", lambda pid: True)
+    monkeypatch.setattr(
+        api,
+        "_process_identity_for_pid",
+        lambda pid: {
+            "pid": pid,
+            "name": "notepad.exe",
+            "started_at": "2026-04-12T00:00:00+00:00",
+            "command_line": "notepad.exe",
+        },
+    )
+
+    assert api._is_auto_loop_running("work", "run-loop-pid-reuse") is False
+
+
+def test_is_auto_loop_running_rejects_pid_reuse_for_different_powershell_identity(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-loop-pid-reuse-powershell"
+    _write_auto_loop_marker(run_dir, pid=9999)
+
+    monkeypatch.setattr(api, "_resolve_run_dir", lambda taxonomy, run_name: run_dir)
+    monkeypatch.setattr(api, "_pid_exists", lambda pid: True)
+    monkeypatch.setattr(
+        api,
+        "_process_identity_for_pid",
+        lambda pid: {
+            "pid": pid,
+            "name": "powershell.exe",
+            "started_at": "2026-04-12T01:00:00+00:00",
+            "command_line": "powershell.exe -NoProfile",
+        },
+    )
+
+    assert api._is_auto_loop_running("work", "run-loop-pid-reuse-powershell") is False
+
+
+def test_refresh_judge_advisory_record_reads_existing_canonical_payload(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-judge-advisory-build"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_judge_advisory(run_dir, recommendation="Return to Build", human_owned_blocker=False)
+    monkeypatch.setattr(api, "_resolve_agent_os_phase", lambda _: "IMPROVE_NEEDED")
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+    monkeypatch.setattr(
+        api,
+        "_derive_judge_recommendation",
+        lambda run_dir, phase: (_ for _ in ()).throw(AssertionError("review-derived advisory must not be consulted")),
+    )
+
+    payload = api._refresh_judge_advisory_record(run_dir)
+
+    assert payload["recommendation"] == "Return to Build"
+    assert payload["human_owned_blocker"] is False
+    assert payload["advisory_source"] == "judge_structured"
+    assert payload["run_id"] == run_dir.name
+    assert payload["phase"] == "IMPROVE_NEEDED"
+
+
+def test_refresh_judge_advisory_record_reports_missing_payload_without_derivation(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-judge-advisory-human"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(api, "_resolve_agent_os_phase", lambda _: "IMPROVE_NEEDED")
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "HUMAN", "detail": "goal-owner sign-off", "source": "transition_outcome.json"},
+    )
+    monkeypatch.setattr(
+        api,
+        "_derive_judge_recommendation",
+        lambda run_dir, phase: (_ for _ in ()).throw(AssertionError("review-derived advisory must not be consulted")),
+    )
+
+    payload = api._refresh_judge_advisory_record(run_dir)
+
+    assert payload["recommendation"] is None
+    assert payload["human_owned_blocker"] is None
+    assert payload["advisory_source"] == "judge_advisory_missing"
+    assert payload["ownership_status"] == "HUMAN"
+
+
+_CYCLE_TOKEN = "2026-04-12T10:00:00+00:00"  # shared freshness token for decision tests
+
+
+def test_evaluate_improve_auto_loop_decision_returns_build_reroute_for_canonical_advisory(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-improve-build"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=_CYCLE_TOKEN)
+    _write_judge_advisory(run_dir, recommendation="Return to Build", human_owned_blocker=False,
+                          freshness_token=_CYCLE_TOKEN)
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "BUILD_NEEDED"
+    assert decision["reason"] == "auto_reroute_build"
+    assert decision["recommendation"] == "Return to Build"
+    assert decision["log_line"].endswith("action=BUILD_NEEDED reason=auto_reroute_build")
+
+
+def test_evaluate_improve_auto_loop_decision_returns_plan_reroute_for_canonical_advisory(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-improve-plan"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=_CYCLE_TOKEN)
+    _write_judge_advisory(run_dir, recommendation="Return to Plan", human_owned_blocker=False,
+                          freshness_token=_CYCLE_TOKEN)
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "PLAN_NEEDED"
+    assert decision["reason"] == "auto_reroute_plan"
+    assert decision["recommendation"] == "Return to Plan"
+    assert decision["log_line"].endswith("action=PLAN_NEEDED reason=auto_reroute_plan")
+
+
+def test_evaluate_improve_auto_loop_decision_stops_on_accept(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-improve-accept"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=_CYCLE_TOKEN)
+    _write_judge_advisory(run_dir, recommendation="Accept", human_owned_blocker=False,
+                          freshness_token=_CYCLE_TOKEN)
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "accept_is_human_owned"
+    assert decision["log_line"].endswith("action=STOP reason=accept_is_human_owned")
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_recommendation_is_missing(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-improve-missing"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "advisory_missing"
+    assert decision["stop_reason"] == "advisory_missing"
+    assert decision["log_line"].endswith("action=STOP reason=advisory_missing")
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_recommendation_is_unknown(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-improve-unknown"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=_CYCLE_TOKEN)
+    _write_judge_advisory(run_dir, recommendation="Ship It", human_owned_blocker=False,
+                          freshness_token=_CYCLE_TOKEN)
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "advisory_unrecognized"
+    assert decision["log_line"].endswith("action=STOP reason=advisory_unrecognized")
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_human_owned_blocker_is_true(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-improve-human"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=_CYCLE_TOKEN)
+    _write_judge_advisory(run_dir, recommendation="Return to Build", human_owned_blocker=True,
+                          freshness_token=_CYCLE_TOKEN)
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "human_owned_blocker"
+    assert decision["log_line"].endswith("action=STOP reason=human_owned_blocker")
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_run_id_mismatches(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-improve-stale"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=_CYCLE_TOKEN)
+    _write_judge_advisory(run_dir, recommendation="Return to Build", human_owned_blocker=False,
+                          run_id="other-run", freshness_token=_CYCLE_TOKEN)
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "advisory_source_invalid"
+    assert decision["stop_reason"] == "advisory_source_invalid"
+    assert decision["log_line"].endswith("action=STOP reason=advisory_source_invalid")
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_ownership_status_is_unrecorded(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-improve-unrecorded"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=_CYCLE_TOKEN)
+    _write_judge_advisory(run_dir, recommendation="Return to Build", human_owned_blocker=False,
+                          freshness_token=_CYCLE_TOKEN)
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "UNRECORDED", "detail": "missing", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "ownership_unrecorded"
+    assert decision["stop_reason"] == "ownership_unrecorded"
+    assert decision["log_line"].endswith("action=STOP reason=ownership_unrecorded")
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_ownership_status_is_corrupt(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "run-improve-corrupt"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=_CYCLE_TOKEN)
+    _write_judge_advisory(run_dir, recommendation="Return to Plan", human_owned_blocker=False,
+                          freshness_token=_CYCLE_TOKEN)
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "CORRUPT", "detail": "bad-json", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "ownership_corrupt"
+    assert decision["stop_reason"] == "ownership_corrupt"
+    assert decision["log_line"].endswith("action=STOP reason=ownership_corrupt")
 
 
 def test_apply_snapshot_blocks_without_confirmation(tmp_path: Path) -> None:
@@ -225,6 +602,55 @@ def test_build_operator_actions_review_keeps_codex_wrapper_command(monkeypatch, 
 
     primary = next(action for action in actions if action.id == "phase-primary")
     assert primary.command == ".\\scripts\\apsf-wrapper-act.ps1 work/run-073 -Backend codex-cli"
+
+
+def test_build_operator_actions_plan_prefers_config_backend_over_stale_local_assignment(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "viewer.config.json"
+    config_path.write_text(json.dumps({"wrapper_backends": {"act": "codex-cli"}}), encoding="utf-8")
+    monkeypatch.setattr(api, "VIEWER_CONFIG_PATH", config_path)
+    monkeypatch.delenv("APSF_VIEWER_ACT_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("APSF_VIEWER_ACT_WRAPPER_BACKEND", raising=False)
+    monkeypatch.setattr(
+        api,
+        "_resolve_execution_visibility",
+        lambda run_dir, phase: api.ExecutionVisibility(
+            role="Planner",
+            execution_type="cli",
+            target="claude",
+            workspace="workspaces/planner/",
+            mode="explicit",
+            reason="execution-assignment.md specifies stale claude target",
+        ),
+    )
+
+    actions = api.build_operator_actions("work/run-073", "PLAN_NEEDED", tmp_path / "run-073")
+
+    primary = next(action for action in actions if action.id == "phase-primary")
+    assert primary.command == ".\\scripts\\apsf-wrapper-act.ps1 work/run-073 -Backend codex-cli"
+
+
+def test_build_operator_actions_build_prefers_env_over_config_and_stale_local_assignment(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "viewer.config.json"
+    config_path.write_text(json.dumps({"wrapper_backends": {"build": "claude-cli"}}), encoding="utf-8")
+    monkeypatch.setattr(api, "VIEWER_CONFIG_PATH", config_path)
+    monkeypatch.setenv("APSF_VIEWER_BUILD_WRAPPER_BACKEND", "codex")
+    monkeypatch.setattr(
+        api,
+        "_resolve_execution_visibility",
+        lambda run_dir, phase: api.ExecutionVisibility(
+            role="Builder",
+            execution_type="cli",
+            target="claude",
+            workspace="workspaces/builder/",
+            mode="explicit",
+            reason="execution-assignment.md specifies stale claude target",
+        ),
+    )
+
+    actions = api.build_operator_actions("work/run-073", "BUILD_NEEDED", tmp_path / "run-073")
+
+    primary = next(action for action in actions if action.id == "phase-primary")
+    assert primary.command == ".\\scripts\\apsf-wrapper-build.ps1 work/run-073 -Backend codex-cli"
 
 
 def test_build_operator_actions_improve_uses_judge_decision_labels() -> None:
@@ -422,9 +848,152 @@ def test_collect_run_detail_includes_judge_recommendation(tmp_path: Path, monkey
 
     detail = api._collect_run_detail("work", "work/run-073", run_dir)
 
+    assert detail.review_summary is not None
+    assert detail.review_summary.available is True
+    assert detail.review_summary.summary_status == "revise"
+    assert detail.review_summary.critical_count == 1
+    assert detail.review_summary.source_artifact == "review.md"
+    assert any("build_review.md" in action for action in detail.review_summary.next_actions)
     assert detail.judge_recommendation is not None
     assert detail.judge_recommendation.decision == "Revise"
     assert detail.judge_recommendation.review_verdict == "**Conditional Pass**"
+
+
+def test_derive_review_summary_returns_none_without_review_artifact(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-no-review-summary"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    summary = api._derive_review_summary(run_dir, "IMPROVE_NEEDED")
+
+    assert summary is None
+
+
+def test_derive_review_summary_marks_human_blocker_as_blocking(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-review-summary-blocking"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", current_owner="Human")
+    write_transition_outcome(
+        run_dir,
+        TransitionOutcomeRecord(
+            run_id=run_dir.name,
+            transition_type=TransitionType.HUMAN_BLOCKED,
+            transitioned_at="2026-04-13T00:00:00+00:00",
+            transitioned_by="Judge",
+            blocker_owner=BlockerOwnership.HUMAN,
+            source_phase="IMPROVE_NEEDED",
+            target_phase="IMPROVE_NEEDED",
+        ),
+    )
+    (run_dir / "review.md").write_text(
+        "\n".join(
+            [
+                "# Review",
+                "",
+                "## Overall Verdict",
+                "**Conditional Pass**",
+                "",
+                "### Major",
+                "",
+                "**M-1: human approval required**",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    summary = api._derive_review_summary(run_dir, "IMPROVE_NEEDED")
+
+    assert summary is not None
+    assert summary.available is True
+    assert summary.summary_status == "blocking"
+    assert summary.major_count == 1
+    assert any("human-owned blocker" in action.lower() for action in summary.next_actions)
+
+
+def test_derive_review_summary_marks_adopt_for_minor_only_review(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-review-summary-adopt"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "review.md").write_text(
+        "\n".join(
+            [
+                "# Review",
+                "",
+                "## Verdict",
+                "Accept",
+                "",
+                "### m-1: clarify note",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    summary = api._derive_review_summary(run_dir, "IMPROVE_NEEDED")
+
+    assert summary is not None
+    assert summary.available is True
+    assert summary.summary_status == "adopt"
+    assert summary.minor_count == 1
+    assert any("close-out" in action.lower() for action in summary.next_actions)
+
+
+def test_derive_review_summary_uses_fallback_actions_for_review_needed_phase(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-review-summary-review-needed"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "review.md").write_text(
+        "\n".join(
+            [
+                "# Review",
+                "",
+                "## Overall Verdict",
+                "**Conditional Pass**",
+                "",
+                "### Major",
+                "",
+                "**M-1: one issue remains**",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    summary = api._derive_review_summary(run_dir, "REVIEW_NEEDED")
+
+    assert summary is not None
+    assert summary.available is True
+    assert summary.summary_status == "revise"
+    assert summary.major_count == 1
+    assert any("finish the review cycle" in action.lower() for action in summary.next_actions)
+
+
+def test_derive_review_summary_marks_unknown_for_zero_count_no_adopt_signal(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-review-summary-unknown"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "review.md").write_text(
+        "\n".join(
+            [
+                "# Review",
+                "",
+                "## Summary of review",
+                "Manual review required.",
+                "",
+                "## Critical Issues",
+                "- none",
+                "",
+                "## Major Issues",
+                "- none",
+                "",
+                "## Minor Issues",
+                "- none",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    summary = api._derive_review_summary(run_dir, "IMPROVE_NEEDED")
+
+    assert summary is not None
+    assert summary.available is True
+    assert summary.summary_status == "unknown"
+    assert summary.critical_count == 0
+    assert summary.major_count == 0
+    assert summary.minor_count == 0
 
 
 def test_collect_run_detail_prefers_run_state_phase_for_actions_and_assignment(
@@ -460,6 +1029,41 @@ def test_collect_run_detail_prefers_run_state_phase_for_actions_and_assignment(
     assert detail.next_role == "Builder"
     assert detail.operator_actions[0].label == "Run Builder (Tool-Enabled)"
     assert detail.assignment_summary.phase == "BUILD_NEEDED"
+
+
+def test_collect_run_detail_suppresses_detector_mismatch_for_completed_result_written(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run-detail-result-written"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_run_state(run_dir, phase="RESULT_WRITTEN", phase_status="completed", current_owner="Judge")
+    (run_dir / "goal.md").write_text("goal", encoding="utf-8")
+    (run_dir / "improve.md").write_text("# Improve\n\nAccepted.\n", encoding="utf-8")
+    (run_dir / "result.md").write_text("# Result\n\nClosed.\n", encoding="utf-8")
+    monkeypatch.setattr(api, "load_priority_index", lambda: {})
+    monkeypatch.setattr(api.repo, "list_child_runs", lambda parent_name, taxonomy=None: [])
+
+    class _PhaseValue:
+        value = "IMPROVE_NEEDED"
+
+    class _FakeInfo:
+        phase = _PhaseValue()
+        next_role = "Human"
+        decision_reason = "improve.md filled; result.md not filled"
+
+    class _FakeDetector:
+        def __init__(self, _run_dir: Path) -> None:
+            pass
+
+        def detect(self):
+            return _FakeInfo()
+
+    monkeypatch.setattr(api, "PhaseDetector", _FakeDetector)
+
+    detail = api._collect_run_detail("work", "work/run-detail-result-written", run_dir)
+
+    assert detail.phase == "RESULT_WRITTEN"
+    assert detail.decision_reason == "improve.md filled; result.md not filled"
 
 
 def test_execute_operator_command_pins_build_needed_after_partial_build(monkeypatch, tmp_path: Path) -> None:
@@ -1162,6 +1766,18 @@ def test_derive_judge_recommendation_counts_dash_separated_issue_ids_and_prefers
 def test_detect_run_human_blocker_prefers_latest_review(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-205"
     run_dir.mkdir(parents=True, exist_ok=True)
+    write_transition_outcome(
+        run_dir,
+        TransitionOutcomeRecord(
+            run_id=run_dir.name,
+            transition_type=TransitionType.HUMAN_BLOCKED,
+            transitioned_at="2026-04-09T00:00:00+00:00",
+            transitioned_by="human",
+            blocker_owner=BlockerOwnership.HUMAN,
+            source_phase="REVIEW_NEEDED",
+            target_phase="REVIEW_NEEDED",
+        ),
+    )
     (run_dir / "build_review.md").write_text(
         "# Build Review\n\n## Summary\n\n- stale scaffold\n",
         encoding="utf-8",
@@ -1190,6 +1806,18 @@ def test_detect_run_human_blocker_prefers_latest_review(tmp_path: Path) -> None:
 def test_detect_run_human_blocker_prefers_build_review_judge_override(tmp_path: Path) -> None:
     run_dir = tmp_path / "run-205"
     run_dir.mkdir(parents=True, exist_ok=True)
+    write_transition_outcome(
+        run_dir,
+        TransitionOutcomeRecord(
+            run_id=run_dir.name,
+            transition_type=TransitionType.BUILD_NEEDED,
+            transitioned_at="2026-04-09T00:00:00+00:00",
+            transitioned_by="Judge",
+            blocker_owner=BlockerOwnership.SYSTEM,
+            source_phase="REVIEW_NEEDED",
+            target_phase="BUILD_NEEDED",
+        ),
+    )
     (run_dir / "build_review.md").write_text(
         "\n".join(
             [
@@ -1224,6 +1852,97 @@ def test_detect_run_human_blocker_prefers_build_review_judge_override(tmp_path: 
     blocker = api._detect_run_human_blocker(run_dir)
 
     assert blocker is None
+
+
+def test_detect_run_human_blocker_returns_invalid_status_without_marking_active(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-205-invalid"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "transition_outcome.json").write_text("{bad json}", encoding="utf-8")
+
+    blocker = api._detect_run_human_blocker(run_dir)
+
+    assert blocker is not None
+    assert blocker.active is False
+    assert blocker.ownership_status == "CORRUPT"
+
+
+def test_record_human_blocked_comment_outcome_writes_canonical_human_record(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-judge-human"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", current_owner="Human")
+
+    written = api._record_human_blocked_comment_outcome(
+        run_dir,
+        "**Goal-owner decision: HUMAN_BLOCKED**\nblocker_owner=HUMAN\n人間判断待ち",
+    )
+
+    assert written is True
+    outcome = get_transition_outcome(run_dir)
+    assert outcome.transition_type == TransitionType.HUMAN_BLOCKED
+    assert outcome.blocker_owner == BlockerOwnership.HUMAN
+    assert outcome.source_phase == "IMPROVE_NEEDED"
+    assert outcome.target_phase == "IMPROVE_NEEDED"
+
+
+def test_derive_judge_recommendation_uses_canonical_system_state_for_blocker_flag(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-judge-system"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", current_owner="Human")
+    write_transition_outcome(
+        run_dir,
+        TransitionOutcomeRecord(
+            run_id=run_dir.name,
+            transition_type=TransitionType.BUILD_NEEDED,
+            transitioned_at="2026-04-09T00:00:00+00:00",
+            transitioned_by="Judge",
+            blocker_owner=BlockerOwnership.SYSTEM,
+            source_phase="REVIEW_NEEDED",
+            target_phase="BUILD_NEEDED",
+        ),
+    )
+    (run_dir / "review.md").write_text(
+        "\n".join(
+            [
+                "**Verdict: CONDITIONAL PASS - Critical human-owned blocker persists**",
+                "",
+                "### MAJOR Issues",
+                "#### M-1 Contract update required",
+                "",
+                "**Required action (human-owned):**",
+                "Option (a): Goal-owner sign-off.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    recommendation = api._derive_judge_recommendation(run_dir, "IMPROVE_NEEDED")
+
+    assert recommendation is not None
+    assert recommendation.decision == "Revise"
+    assert recommendation.human_owned_blocker is False
+    assert recommendation.ownership_status == "SUPERSEDED"
+
+
+def test_derive_judge_recommendation_surfaces_corrupt_ownership_state(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-judge-corrupt"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", current_owner="Human")
+    (run_dir / "transition_outcome.json").write_text("{bad json}", encoding="utf-8")
+    (run_dir / "review.md").write_text(
+        "\n".join(
+            [
+                "**Verdict: CONDITIONAL PASS - Critical human-owned blocker persists**",
+                "",
+                "### MAJOR Issues",
+                "#### M-1 Contract update required",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    recommendation = api._derive_judge_recommendation(run_dir, "IMPROVE_NEEDED")
+
+    assert recommendation is not None
+    assert recommendation.human_owned_blocker is False
+    assert recommendation.ownership_status == "CORRUPT"
+    assert recommendation.ownership_detail is not None
 
 
 def test_classify_process_result_marks_partial_on_reached_max_turns() -> None:
@@ -1384,3 +2103,420 @@ def test_emphatic_verdict_with_trailing_text_is_captured_correctly() -> None:
     review_text = "**Verdict: Ready to close.** Proceed to Adopt."
     verdict = api._extract_review_verdict(review_text)
     assert verdict == "Ready to close."
+
+
+# ---------------------------------------------------------------------------
+# Freshness token — staleness checks
+# ---------------------------------------------------------------------------
+
+def test_evaluate_improve_auto_loop_decision_stops_when_advisory_freshness_token_is_stale(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Advisory written for a prior cycle (different freshness_token) must stop auto-loop."""
+    run_dir = tmp_path / "run-improve-stale-token"
+    cycle_token = "2026-04-12T10:00:00+00:00"
+    old_token = "2026-04-12T09:00:00+00:00"  # prior cycle
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=cycle_token)
+    _write_judge_advisory(
+        run_dir,
+        recommendation="Return to Build",
+        human_owned_blocker=False,
+        freshness_token=old_token,  # stale: does not match current cycle
+    )
+    monkeypatch.setattr(
+        api, "get_build_gate_decision",
+        lambda _: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "advisory_stale"
+    assert decision["stop_reason"] == "advisory_stale"
+    assert "advisory_stale" in decision["log_line"]
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_advisory_has_no_freshness_token(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Advisory with no freshness_token is treated as stale when run_state has phase_entered_at."""
+    run_dir = tmp_path / "run-improve-no-token"
+    cycle_token = "2026-04-12T10:00:00+00:00"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=cycle_token)
+    _write_judge_advisory(
+        run_dir,
+        recommendation="Return to Build",
+        human_owned_blocker=False,
+        freshness_token=None,  # no freshness_token — legacy or missing
+    )
+    monkeypatch.setattr(
+        api, "get_build_gate_decision",
+        lambda _: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "advisory_stale"
+
+
+def test_evaluate_improve_auto_loop_decision_reroutes_when_freshness_token_matches(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Advisory with matching freshness_token should still allow auto-reroute."""
+    run_dir = tmp_path / "run-improve-fresh-token"
+    cycle_token = "2026-04-12T10:00:00+00:00"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=cycle_token)
+    _write_judge_advisory(
+        run_dir,
+        recommendation="Return to Build",
+        human_owned_blocker=False,
+        freshness_token=cycle_token,  # matches current cycle
+    )
+    monkeypatch.setattr(
+        api, "get_build_gate_decision",
+        lambda _: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "BUILD_NEEDED"
+    assert decision["reason"] == "auto_reroute_build"
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_both_tokens_absent_legacy_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fail-closed: if run_state has no phase_entered_at and advisory has no freshness_token,
+    auto-reroute is blocked. Legacy runs must re-enter IMPROVE_NEEDED to establish an anchor."""
+    run_dir = tmp_path / "run-improve-legacy-state"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at="")  # legacy — no token
+    _write_judge_advisory(
+        run_dir,
+        recommendation="Return to Build",
+        human_owned_blocker=False,
+        freshness_token=None,  # also no token
+    )
+    monkeypatch.setattr(
+        api, "get_build_gate_decision",
+        lambda _: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    # Both tokens absent: fail-closed — stale advisory must not drive auto-reroute.
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "advisory_stale"
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_advisory_has_token_but_run_state_does_not(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fail-closed: advisory has freshness_token but run_state has no phase_entered_at.
+    Freshness cannot be verified — treat as stale."""
+    run_dir = tmp_path / "run-improve-unverifiable"
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at="")  # old run_state, no anchor
+    _write_judge_advisory(
+        run_dir,
+        recommendation="Return to Build",
+        human_owned_blocker=False,
+        freshness_token="2026-04-12T10:00:00+00:00",  # token present but unverifiable
+    )
+    monkeypatch.setattr(
+        api, "get_build_gate_decision",
+        lambda _: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "advisory_stale"
+
+
+# ---------------------------------------------------------------------------
+# E2E: REVIEW → IMPROVE_NEEDED cycle — advisory stub written, then rerouted
+# ---------------------------------------------------------------------------
+
+def test_write_improve_cycle_stub_writes_advisory_with_freshness_token(tmp_path: Path) -> None:
+    """write_improve_cycle_stub() writes advisory stub with matching freshness_token."""
+    from apsf.core.advisory import write_improve_cycle_stub
+
+    run_dir = tmp_path / "run-cycle-stub"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    phase_entered_at = "2026-04-12T10:00:00+00:00"
+
+    write_improve_cycle_stub(run_dir, phase_entered_at)
+
+    advisory = json.loads((run_dir / "judge_advisory.json").read_text(encoding="utf-8"))
+    assert advisory["advisory_source"] == "improve_cycle_started"
+    assert advisory["recommendation"] is None
+    assert advisory["freshness_token"] == phase_entered_at
+    assert advisory["run_id"] == run_dir.name
+    assert advisory["phase"] == "IMPROVE_NEEDED"
+
+
+def test_e2e_review_to_improve_cycle_stub_then_judge_advisory_then_reroute(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Full cycle: stub written on IMPROVE_NEEDED entry → judge writes advisory → auto-loop reroutes.
+
+    This is the end-to-end-near test required by goal-owner item 7:
+    REVIEW → IMPROVE_NEEDED cycle establishes advisory, judge records Return to Build,
+    auto-loop evaluates and reroutes without human intervention.
+    """
+    from apsf.core.advisory import write_improve_cycle_stub
+
+    run_dir = tmp_path / "run-e2e-improve-cycle"
+    cycle_token = "2026-04-12T11:00:00+00:00"
+
+    # Step 1: Transition to IMPROVE_NEEDED — write cycle stub (simulates write-phase review.md)
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=cycle_token)
+    write_improve_cycle_stub(run_dir, cycle_token)
+
+    # Verify stub was written correctly
+    stub = json.loads((run_dir / "judge_advisory.json").read_text(encoding="utf-8"))
+    assert stub["advisory_source"] == "improve_cycle_started"
+    assert stub["freshness_token"] == cycle_token
+    assert stub["recommendation"] is None
+
+    # Step 2: Auto-loop reaches IMPROVE_NEEDED — should stop because no canonical recommendation yet
+    monkeypatch.setattr(
+        api, "get_build_gate_decision",
+        lambda _: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "advisory_source_invalid"  # stub source != judge_structured
+
+    # Step 3: Judge records Return to Build (via _write_judge_advisory_record)
+    monkeypatch.setattr(api, "_resolve_agent_os_phase", lambda _: "IMPROVE_NEEDED")
+    api._write_judge_advisory_record(
+        run_dir,
+        recommendation="Return to Build",
+        human_owned_blocker=False,
+        phase="IMPROVE_NEEDED",
+        source="judge_decision",
+        freshness_token=cycle_token,  # same cycle token
+    )
+
+    # Step 4: Auto-loop evaluates again — should reroute
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+    assert decision["action"] == "BUILD_NEEDED"
+    assert decision["reason"] == "auto_reroute_build"
+    assert decision["log_line"].endswith("action=BUILD_NEEDED reason=auto_reroute_build")
+
+
+def test_e2e_stale_advisory_from_prior_cycle_does_not_reroute(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Stale advisory from a prior IMPROVE_NEEDED cycle must not trigger reroute in the new cycle."""
+    run_dir = tmp_path / "run-e2e-stale-cycle"
+    old_token = "2026-04-12T09:00:00+00:00"
+    new_token = "2026-04-12T12:00:00+00:00"
+
+    # Advisory from prior cycle
+    _write_judge_advisory(
+        run_dir,
+        recommendation="Return to Build",
+        human_owned_blocker=False,
+        freshness_token=old_token,
+    )
+
+    # New cycle entered (run went BUILD → REVIEW → IMPROVE again)
+    _write_run_state(run_dir, phase="IMPROVE_NEEDED", phase_status="pending",
+                     current_owner="Human", phase_entered_at=new_token)
+
+    monkeypatch.setattr(
+        api, "get_build_gate_decision",
+        lambda _: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "advisory_stale"
+
+
+# ---------------------------------------------------------------------------
+# Operational verification: start_auto_loop → running=true → stop → running=false
+# ---------------------------------------------------------------------------
+
+def test_auto_loop_operational_start_then_running_then_stop(tmp_path: Path, monkeypatch) -> None:
+    """Operational verification: start loop → running=true → process exits → running=false."""
+    run_dir = tmp_path / "run-op-verify"
+    _write_run_state(run_dir, phase="BUILD_NEEDED", phase_status="pending", current_owner="Builder")
+
+    alive = {"value": True}
+    fake_pid = 12345
+
+    class FakeProc:
+        pid = fake_pid
+
+        def poll(self):
+            return None if alive["value"] else 0
+
+    monkeypatch.setattr(api, "_resolve_run_dir", lambda tax, name: run_dir)
+    monkeypatch.setattr(api, "_is_auto_loop_running", lambda tax, name: False)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: FakeProc())
+
+    # Start the loop
+    result = asyncio.run(api.start_auto_loop("work", "run-op-verify", api.AutoLoopOptions()))
+    assert result["status"] == "started"
+    assert result["pid"] == fake_pid
+
+    # While process is alive, Popen-based check reports running=true
+    key = api._auto_loop_key("work", "run-op-verify")
+    assert api._auto_loop_procs[key].poll() is None
+
+    # Process exits
+    alive["value"] = False
+    assert api._auto_loop_procs[key].poll() == 0
+
+    # _is_auto_loop_running now removes the proc and returns False
+    # (restore real function for this check)
+    monkeypatch.undo()
+    assert api._is_auto_loop_running("work", "run-op-verify") is False
+
+    api._close_auto_loop_log(key)
+
+
+def test_parse_review_judge_advisory_reads_structured_block() -> None:
+    from apsf.core.advisory import parse_review_judge_advisory
+
+    payload = parse_review_judge_advisory(
+        "# Review\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Build","human_owned_blocker":false}\n'
+        "```\n"
+    )
+
+    assert payload == {
+        "recommendation": "Return to Build",
+        "human_owned_blocker": False,
+    }
+
+
+def test_parse_review_judge_advisory_fails_when_block_is_missing() -> None:
+    from apsf.core.advisory import parse_review_judge_advisory
+
+    with pytest.raises(ValueError, match="exactly one"):
+        parse_review_judge_advisory("# Review\n\nNo advisory block here.\n")
+
+
+def test_parse_review_judge_advisory_fails_when_duplicate_identical_blocks_exist() -> None:
+    from apsf.core.advisory import parse_review_judge_advisory
+
+    review_text = (
+        "# Review\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Build","human_owned_blocker":false}\n'
+        "```\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Build","human_owned_blocker":false}\n'
+        "```\n"
+    )
+
+    with pytest.raises(ValueError, match="multiple blocks are not allowed"):
+        parse_review_judge_advisory(review_text)
+
+
+def test_parse_review_judge_advisory_fails_when_duplicate_conflicting_blocks_exist() -> None:
+    from apsf.core.advisory import parse_review_judge_advisory
+
+    review_text = (
+        "# Review\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Build","human_owned_blocker":false}\n'
+        "```\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Plan","human_owned_blocker":true}\n'
+        "```\n"
+    )
+
+    with pytest.raises(ValueError, match="multiple blocks are not allowed"):
+        parse_review_judge_advisory(review_text)
+
+
+def test_evaluate_improve_auto_loop_decision_stops_when_human_owned_blocker_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run-improve-blocker-missing"
+    _write_run_state(
+        run_dir,
+        phase="IMPROVE_NEEDED",
+        phase_status="pending",
+        current_owner="Human",
+        phase_entered_at=_CYCLE_TOKEN,
+    )
+    (run_dir / "judge_advisory.json").write_text(
+        json.dumps(
+            {
+                "recommendation": "Return to Build",
+                "advisory_source": "judge_structured",
+                "run_id": run_dir.name,
+                "generated_at": "2026-04-12T00:00:00+00:00",
+                "phase": "IMPROVE_NEEDED",
+                "source": "write-phase review completion",
+                "freshness_token": _CYCLE_TOKEN,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda run_dir: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "human_owned_blocker_invalid"
+    assert decision["stop_reason"] == "human_owned_blocker_invalid"
+    assert decision["log_line"].endswith("action=STOP reason=human_owned_blocker_invalid")
+
+
+def test_e2e_review_completion_advisory_reroutes_without_manual_judge_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / "run-e2e-review-completion"
+    cycle_token = "2026-04-12T11:00:00+00:00"
+
+    _write_run_state(
+        run_dir,
+        phase="IMPROVE_NEEDED",
+        phase_status="pending",
+        current_owner="Human",
+        phase_entered_at=cycle_token,
+    )
+    monkeypatch.setattr(
+        api,
+        "get_build_gate_decision",
+        lambda _: {"status": "SYSTEM", "detail": "", "source": "transition_outcome.json"},
+    )
+    monkeypatch.setattr(api, "_resolve_agent_os_phase", lambda _: "IMPROVE_NEEDED")
+    api._write_judge_advisory_record(
+        run_dir,
+        recommendation="Return to Plan",
+        human_owned_blocker=False,
+        phase="IMPROVE_NEEDED",
+        source="write-phase review completion",
+        freshness_token=cycle_token,
+    )
+
+    advisory = json.loads((run_dir / "judge_advisory.json").read_text(encoding="utf-8"))
+    assert advisory["advisory_source"] == "judge_structured"
+    assert advisory["source"] == "write-phase review completion"
+    assert advisory["freshness_token"] == cycle_token
+
+    decision = api._evaluate_improve_auto_loop_decision(run_dir)
+
+    assert decision["action"] == "PLAN_NEEDED"
+    assert decision["reason"] == "auto_reroute_plan"
+    assert decision["log_line"].endswith("action=PLAN_NEEDED reason=auto_reroute_plan")

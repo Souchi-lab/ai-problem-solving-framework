@@ -237,7 +237,14 @@ def test_act_service_human_phase_auto_advance_preserves_transition_reset_fields(
     run_dir = tmp_path / "human-phase-sync"
     run_dir.mkdir()
     (run_dir / "execution-assignment.md").write_text(
-        "# Execution Assignment\n\nFilled by human.\n",
+        "# Execution Assignment\n\n"
+        "## Goal Summary\n\n"
+        "Minimal run for testing human phase auto-advance and transition reset.\n\n"
+        "## Role Execution Assignments\n\n"
+        "Planner will create the plan.\n"
+        "Builder will execute the build.\n"
+        "Critic will review the build.\n"
+        "Judge will make the final decision.\n",
         encoding="utf-8",
     )
 

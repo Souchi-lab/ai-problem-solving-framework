@@ -14,11 +14,39 @@ from typing import Any, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+try:
+    import psutil
+except ImportError:  # pragma: no cover - optional dependency
+    psutil = None
+
+from apsf.core.advisory import (
+    CANONICAL_JUDGE_ADVISORY_SOURCE,
+    JUDGE_ADVISORY_FILE as _JUDGE_ADVISORY_FILE_CORE,
+    JUDGE_ADVISORY_RECOMMENDATIONS,
+    canonical_judge_advisory_payload,
+    write_canonical_judge_advisory,
+)
+from apsf.core.ownership import (
+    BlockerOwnership,
+    TransitionOutcomeRecord,
+    TransitionType,
+    write_transition_outcome,
+)
+from apsf.core.dependencies.run_dependencies import dependency_status_by_run
+from apsf.core.storage.text_artifact_codec import (
+    normalize_text_artifact_to_utf8,
+    read_text_artifact,
+)
+from apsf.core.runs.child_run_initializer import initialize_child_run
 from apsf.legacy.orchestration.phase_detector import PhaseDetector
-from apsf.legacy.orchestration.rebuild_feedback import detect_human_owned_blocker, latest_review_artifact
+from apsf.legacy.orchestration.rebuild_feedback import (
+    get_build_gate_decision,
+    latest_review_artifact,
+)
 from apsf.legacy.storage.run_repository import RunRepository
 from apsf.viewer.viewer_db import ViewerDB
 
@@ -173,7 +201,7 @@ class OperatorAction(BaseModel):
     id: str
     label: str
     command: str
-    execution_type: Literal["act", "build", "rerun", "human"]
+    execution_type: Literal["act", "build", "rerun", "human", "accept"]
     warning_level: Literal["none", "caution", "danger"] = "none"
     enabled: bool = True
     description: str = ""
@@ -247,6 +275,20 @@ class JudgeRecommendation(BaseModel):
     human_blocker_summary: str | None = None
     human_blocker_source: str | None = None
     human_actions: List[str] = []
+    ownership_status: str | None = None
+    ownership_detail: str | None = None
+
+
+class ReviewSummary(BaseModel):
+    available: bool = False
+    summary_status: Literal["blocking", "revise", "adopt", "unknown"] | None = None
+    critical_count: int = 0
+    major_count: int = 0
+    minor_count: int = 0
+    review_verdict: str | None = None
+    counts_note: str | None = None
+    next_actions: List[str] = []
+    source_artifact: str | None = None
 
 
 class HumanBlockerStatus(BaseModel):
@@ -254,6 +296,8 @@ class HumanBlockerStatus(BaseModel):
     summary: str | None = None
     source: str | None = None
     actions: List[str] = []
+    ownership_status: str | None = None
+    ownership_detail: str | None = None
 
 
 class RunDetail(BaseModel):
@@ -268,6 +312,7 @@ class RunDetail(BaseModel):
     children: List["ChildRunSummary"]
     specialist_visibility: SpecialistVisibility
     assignment_summary: AssignmentSummary
+    review_summary: ReviewSummary | None = None
     judge_recommendation: JudgeRecommendation | None = None
     human_blocker: HumanBlockerStatus | None = None
     priority: Literal["Now", "Next", "Later", "Unranked"] = "Unranked"
@@ -282,6 +327,22 @@ class ChildRunSummary(BaseModel):
     operator_command: str
     primary_action_label: str
     has_children: bool
+    depends_on: List[str] = []
+    dependency_phases: dict[str, str] = {}
+    has_incomplete_dependencies: bool = False
+
+
+class CreateChildRunRequest(BaseModel):
+    run_id: str
+    taxonomy: str
+    title: str
+    goal: str
+
+
+class CreateChildRunResponse(BaseModel):
+    run_id: str
+    path: str
+    status: Literal["created"]
 
 
 class ExecuteCommandRequest(BaseModel):
@@ -384,6 +445,9 @@ class ConfirmSpecialistRequest(BaseModel):
     role: Literal["Planner", "Builder", "Critic"] = "Planner"
     specialist_code: str   # e.g. "P-06" or "" for generic
     source: str = "operator-accept"
+    provider: str = ""
+    model: str = ""
+    apply_model_assignment: bool = False
 
 
 class ConfirmSpecialistResponse(BaseModel):
@@ -391,6 +455,7 @@ class ConfirmSpecialistResponse(BaseModel):
     specialist_code: str
     artifact_path: str
     target_run_name: str
+    model_artifact_path: str | None = None
 
 
 class CreateSpecialistRequest(BaseModel):
@@ -804,15 +869,6 @@ def _resolve_build_wrapper_backend() -> str:
     )
 
 
-def _backend_hint_from_execution_target(target: str) -> str | None:
-    normalized = target.strip().lower()
-    if normalized in {"codex", "codex-cli"}:
-        return "codex-cli"
-    if normalized in {"claude", "claude-cli"}:
-        return "claude-cli"
-    return None
-
-
 def _resolve_phase_wrapper_backend(run_dir: Path | None, phase: str, action: Literal["act", "build"]) -> str | None:
     if run_dir is None:
         return None
@@ -820,7 +876,9 @@ def _resolve_phase_wrapper_backend(run_dir: Path | None, phase: str, action: Lit
     execution = _resolve_execution_visibility(run_dir, phase)
     if execution.execution_type != "cli":
         return None
-    return _backend_hint_from_execution_target(execution.target)
+    if action == "act":
+        return _resolve_act_wrapper_backend()
+    return _resolve_build_wrapper_backend()
 
 
 def _build_act_command(run_name: str, phase: str | None = None, backend_hint: str | None = None) -> str:
@@ -1011,14 +1069,23 @@ def build_operator_actions(run_name: str, phase: str, run_dir: Path | None = Non
     elif phase == "IMPROVE_NEEDED":
         actions.append(
             OperatorAction(
+                id="accept-improve",
+                label="Judge and Proceed to Result",
+                command="",
+                execution_type="accept",
+                description="Record the Judge acceptance in improve.md and advance the run to RESULT_NEEDED.",
+                primary=True,
+            )
+        )
+        actions.append(
+            OperatorAction(
                 id="phase-primary",
                 label="Judge Decision",
                 command=f"apsf next {command_run_name}",
                 execution_type="human",
                 warning_level="caution",
                 enabled=False,
-                description="Inspect review findings, record the Judge decision, and choose whether to continue or return a prior phase.",
-                primary=True,
+                description="CLI で判断を記録する場合はこちら。",
             )
         )
     else:
@@ -1090,6 +1157,10 @@ def build_child_summaries(parent_name: str, taxonomy: str | None) -> List[ChildR
         info = PhaseDetector(child_dir).detect()
         actions = build_operator_actions(full_name, info.phase.value, child_dir)
         primary_action = next((action for action in actions if action.primary), actions[0])
+        depends_on, dependency_phases, has_incomplete_dependencies = dependency_status_by_run(
+            project_root=PROJECT_ROOT,
+            run_dir=child_dir,
+        )
         children.append(
             ChildRunSummary(
                 name=full_name,
@@ -1099,8 +1170,18 @@ def build_child_summaries(parent_name: str, taxonomy: str | None) -> List[ChildR
                 operator_command=primary_action.command,
                 primary_action_label=primary_action.label,
                 has_children=False,
+                depends_on=depends_on,
+                dependency_phases=dependency_phases,
+                has_incomplete_dependencies=has_incomplete_dependencies,
             )
         )
+    children.sort(
+        key=lambda child: (
+            not child.has_incomplete_dependencies,
+            len(child.depends_on) == 0,
+            child.child_name.lower(),
+        )
+    )
     return children
 
 
@@ -1255,6 +1336,17 @@ def _resolve_canonical_view_phase(taxonomy: str, run_name: str, run_dir: Path, d
         _pin_run_state_after_partial_build(run_dir)
         return "BUILD_NEEDED"
     return canonical_phase
+
+
+def _suppress_detector_mismatch_banner(run_dir: Path, canonical_phase: str) -> bool:
+    from ..core.state.run_state_repository import RunStateRepository
+
+    state = RunStateRepository(run_dir).load()
+    if state is None:
+        return False
+    if state.phase_status != "completed":
+        return False
+    return canonical_phase in {"RESULT_WRITTEN", "COMPLETE", "COMPLETED", "TRANSCRIPT_RECOMMENDED"}
 
 
 def _default_snapshot_targets(run_dir: Path) -> list[str]:
@@ -1594,7 +1686,7 @@ def _execute_agent_os_action(
 
 def _read_artifact_preview(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8")[:500]
+        return read_text_artifact(path, errors="replace")[:500]
     except Exception:
         return "[Error reading file]"
 
@@ -1622,7 +1714,7 @@ def _bootstrap_run_state_if_missing(run_dir: Path):
 
 def _read_text_if_exists(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8") if path.exists() else ""
+        return read_text_artifact(path) if path.exists() else ""
     except OSError:
         return ""
 
@@ -1970,9 +2062,13 @@ def _derive_judge_recommendation(run_dir: Path, phase: str) -> JudgeRecommendati
     if not review_text:
         return None
 
-    human_blocker = detect_human_owned_blocker(review_text)
-    human_blocker_actions = [str(action) for action in (human_blocker or {}).get("actions", [])]
-    human_blocker_summary = str((human_blocker or {}).get("summary")) if human_blocker is not None else None
+    blocker_decision = get_build_gate_decision(run_dir)
+    ownership_status = str(blocker_decision.get("status") or "")
+    ownership_detail = str(blocker_decision.get("detail") or "").strip() or None
+    human_blocker = blocker_decision.get("blocker") if ownership_status == "HUMAN" else None
+    human_blocker_actions = [str(action) for action in blocker_decision.get("actions", [])]
+    human_blocker_summary = str(blocker_decision.get("summary") or "").strip() or None
+    human_blocker_source = str(blocker_decision.get("source") or "").strip() or None
 
     critical_count, major_count, minor_count, counts_note = _extract_review_issue_counts(review_text)
     verdict = _extract_review_verdict(review_text)
@@ -2008,8 +2104,10 @@ def _derive_judge_recommendation(run_dir: Path, phase: str) -> JudgeRecommendati
             minor_count=minor_count,
             human_owned_blocker=human_blocker is not None,
             human_blocker_summary=human_blocker_summary,
-            human_blocker_source="review.md" if human_blocker is not None else None,
+            human_blocker_source=human_blocker_source,
             human_actions=human_blocker_actions,
+            ownership_status=ownership_status,
+            ownership_detail=ownership_detail,
         )
 
     if critical_count > 0:
@@ -2032,8 +2130,10 @@ def _derive_judge_recommendation(run_dir: Path, phase: str) -> JudgeRecommendati
             minor_count=minor_count,
             human_owned_blocker=human_blocker is not None,
             human_blocker_summary=human_blocker_summary,
-            human_blocker_source="review.md" if human_blocker is not None else None,
+            human_blocker_source=human_blocker_source,
             human_actions=human_blocker_actions,
+            ownership_status=ownership_status,
+            ownership_detail=ownership_detail,
         )
 
     if major_count > 0:
@@ -2056,8 +2156,10 @@ def _derive_judge_recommendation(run_dir: Path, phase: str) -> JudgeRecommendati
             minor_count=minor_count,
             human_owned_blocker=human_blocker is not None,
             human_blocker_summary=human_blocker_summary,
-            human_blocker_source="review.md" if human_blocker is not None else None,
+            human_blocker_source=human_blocker_source,
             human_actions=human_blocker_actions,
+            ownership_status=ownership_status,
+            ownership_detail=ownership_detail,
         )
 
     if has_not_met or has_partially_met:
@@ -2078,8 +2180,10 @@ def _derive_judge_recommendation(run_dir: Path, phase: str) -> JudgeRecommendati
             minor_count=minor_count,
             human_owned_blocker=human_blocker is not None,
             human_blocker_summary=human_blocker_summary,
-            human_blocker_source="review.md" if human_blocker is not None else None,
+            human_blocker_source=human_blocker_source,
             human_actions=human_blocker_actions,
+            ownership_status=ownership_status,
+            ownership_detail=ownership_detail,
         )
 
     if (
@@ -2107,8 +2211,10 @@ def _derive_judge_recommendation(run_dir: Path, phase: str) -> JudgeRecommendati
             minor_count=minor_count,
             human_owned_blocker=human_blocker is not None,
             human_blocker_summary=human_blocker_summary,
-            human_blocker_source="review.md" if human_blocker is not None else None,
+            human_blocker_source=human_blocker_source,
             human_actions=human_blocker_actions,
+            ownership_status=ownership_status,
+            ownership_detail=ownership_detail,
         )
 
     return JudgeRecommendation(
@@ -2122,9 +2228,193 @@ def _derive_judge_recommendation(run_dir: Path, phase: str) -> JudgeRecommendati
         minor_count=minor_count,
         human_owned_blocker=human_blocker is not None,
         human_blocker_summary=human_blocker_summary,
-        human_blocker_source="review.md" if human_blocker is not None else None,
+        human_blocker_source=human_blocker_source,
         human_actions=human_blocker_actions,
+        ownership_status=ownership_status,
+        ownership_detail=ownership_detail,
     )
+
+
+def _build_review_summary_next_actions(recommendation: JudgeRecommendation) -> list[str]:
+    if recommendation.human_owned_blocker:
+        actions = ["Resolve the human-owned blocker before attempting any reroute."]
+        if recommendation.suggested_return_phase == "PLAN_NEEDED":
+            actions.append("After the blocker is resolved, record Judge feedback and return the run to Planner.")
+        elif recommendation.suggested_return_phase == "BUILD_NEEDED":
+            actions.append("After the blocker is resolved, record Judge feedback and return the run to Builder.")
+        else:
+            actions.append("After the blocker is resolved, record the Judge decision in improve.md.")
+        return actions
+
+    if recommendation.decision == "Reject" or recommendation.suggested_return_phase == "PLAN_NEEDED":
+        return [
+            "Record the Judge decision in improve.md.",
+            "Write feedback to plan_review.md and return the run to Planner at PLAN_NEEDED.",
+        ]
+    if recommendation.decision == "Revise" and recommendation.suggested_return_phase == "BUILD_NEEDED":
+        return [
+            "Record the Judge decision in improve.md.",
+            "Write feedback to build_review.md and return the run to Builder at BUILD_NEEDED.",
+        ]
+    if recommendation.decision == "Adopt":
+        return [
+            "Review any remaining minor issues and capture notes in improve.md.",
+            "Proceed toward result close-out when the Judge decision is final.",
+        ]
+    return [
+        "Read review.md in full and make a manual Judge decision.",
+        "Record the decision in improve.md before rerouting the run.",
+    ]
+
+
+def _review_verdict_looks_adoptable(review_text: str, verdict: str | None) -> bool:
+    verdict_lower = (verdict or "").lower()
+    review_lower = review_text.lower()
+    return bool(
+        "conditional pass" in verdict_lower
+        or "adopt" in verdict_lower
+        or verdict_lower.startswith("accept")
+        or verdict_lower == "acceptable"
+        or "ready to close" in verdict_lower
+        or verdict_lower == "accept"
+        or verdict_lower == "accepted"
+        or verdict_lower == "pass"
+        or verdict_lower == "pass with issues"
+        or "proceed to adopt" in review_lower
+    )
+
+
+def _derive_review_summary_status(
+    review_text: str,
+    verdict: str | None,
+    critical_count: int,
+    major_count: int,
+    minor_count: int,
+    has_not_met: bool,
+    has_partially_met: bool,
+    recommendation: JudgeRecommendation | None,
+) -> Literal["blocking", "revise", "adopt", "unknown"]:
+    if recommendation is not None and recommendation.human_owned_blocker:
+        return "blocking"
+    if recommendation is not None and recommendation.decision in {"Reject", "Revise"}:
+        return "revise"
+    if recommendation is not None and recommendation.decision == "Adopt":
+        return "adopt"
+    if critical_count > 0 or major_count > 0 or has_not_met or has_partially_met:
+        return "revise"
+    if minor_count > 0:
+        return "adopt"
+    if _review_verdict_looks_adoptable(review_text, verdict):
+        return "adopt"
+    return "unknown"
+
+
+def _build_fallback_review_summary_next_actions(
+    summary_status: Literal["blocking", "revise", "adopt", "unknown"],
+    phase: str,
+) -> list[str]:
+    if summary_status == "blocking":
+        return [
+            "Resolve the human-owned blocker before attempting any reroute.",
+            "After the blocker is resolved, record the decision and continue the workflow manually.",
+        ]
+    if summary_status == "revise":
+        if phase == "REVIEW_NEEDED":
+            return [
+                "Finish the review cycle and confirm the final review artifact.",
+                "When Judge begins, use the review findings to decide whether the run returns to Plan or Build.",
+            ]
+        return [
+            "Read review.md in full and decide whether the run should return to Plan or Build.",
+            "Record the Judge decision before rerouting the run.",
+        ]
+    if summary_status == "adopt":
+        return [
+            "Review any remaining minor issues and capture notes in improve.md when needed.",
+            "Proceed toward close-out once the human decision is final.",
+        ]
+    return [
+        "Read review.md in full and make a manual decision.",
+        "Do not infer a reroute until the phase owner confirms the next step.",
+    ]
+
+
+def _derive_review_summary(run_dir: Path, phase: str) -> ReviewSummary | None:
+    """Return backend-owned review summary data.
+
+    `None` means no readable review artifact exists for the run.
+    `ReviewSummary.available=True` means a review artifact exists and the backend
+    produced a display-safe summary for it, even if `summary_status` remains
+    `"unknown"`.
+    """
+    review_path = latest_review_artifact(run_dir)
+    review_text = _read_text_if_exists(review_path).strip() if review_path else ""
+    if not review_text:
+        return None
+
+    critical_count, major_count, minor_count, counts_note = _extract_review_issue_counts(review_text)
+    verdict = _extract_review_verdict(review_text)
+    has_not_met, has_partially_met = _extract_review_completion_flags(review_text)
+    recommendation = _derive_judge_recommendation(run_dir, phase)
+    status = _derive_review_summary_status(
+        review_text,
+        verdict,
+        critical_count,
+        major_count,
+        minor_count,
+        has_not_met,
+        has_partially_met,
+        recommendation,
+    )
+
+    return ReviewSummary(
+        available=True,
+        summary_status=status,
+        critical_count=critical_count,
+        major_count=major_count,
+        minor_count=minor_count,
+        review_verdict=verdict,
+        counts_note=counts_note,
+        next_actions=(
+            _build_review_summary_next_actions(recommendation)
+            if recommendation is not None
+            else _build_fallback_review_summary_next_actions(status, phase)
+        ),
+        source_artifact=review_path.name if review_path else None,
+    )
+
+
+def _comment_declares_human_blocked(comment_text: str) -> bool:
+    normalized = comment_text.strip()
+    if not normalized:
+        return False
+    patterns = (
+        r"\bHUMAN_BLOCKED\b",
+        r"\bblocker_owner\s*=\s*HUMAN\b",
+        r"人間判断待ち",
+        r"human[- ]owned blocker",
+    )
+    return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _record_human_blocked_comment_outcome(run_dir: Path, comment_text: str) -> bool:
+    if not _comment_declares_human_blocked(comment_text):
+        return False
+
+    canonical_phase = _resolve_agent_os_phase(run_dir)
+    write_transition_outcome(
+        run_dir,
+        TransitionOutcomeRecord(
+            run_id=run_dir.name,
+            transition_type=TransitionType.HUMAN_BLOCKED,
+            transitioned_at=datetime.now(timezone.utc).isoformat(),
+            transitioned_by="Judge",
+            blocker_owner=BlockerOwnership.HUMAN,
+            source_phase=canonical_phase,
+            target_phase=canonical_phase,
+        ),
+    )
+    return True
 
 
 def _hydrate_judge_recommendation_targets(run_dir: Path, recommendation: JudgeRecommendation | None) -> JudgeRecommendation | None:
@@ -2143,22 +2433,18 @@ def _hydrate_judge_recommendation_targets(run_dir: Path, recommendation: JudgeRe
 
 
 def _detect_run_human_blocker(run_dir: Path) -> HumanBlockerStatus | None:
-    from apsf.legacy.orchestration.rebuild_feedback import iter_build_blocker_sources
-
-    for source_name, text in iter_build_blocker_sources(run_dir):
-        text = text.strip()
-        if not text:
-            continue
-        blocker = detect_human_owned_blocker(text)
-        if blocker is None:
-            continue
-        return HumanBlockerStatus(
-            active=True,
-            summary=str(blocker.get("summary") or ""),
-            source=source_name,
-            actions=[str(action) for action in blocker.get("actions", [])],
-        )
-    return None
+    blocker_decision = get_build_gate_decision(run_dir)
+    status = str(blocker_decision.get("status") or "")
+    if status == "SYSTEM":
+        return None
+    return HumanBlockerStatus(
+        active=status == "HUMAN",
+        summary=str(blocker_decision.get("summary") or ""),
+        source=str(blocker_decision.get("source") or "") or None,
+        actions=[str(action) for action in blocker_decision.get("actions", [])],
+        ownership_status=status or None,
+        ownership_detail=str(blocker_decision.get("detail") or "") or None,
+    )
 
 
 def _build_artifact_inventory(run_dir: Path) -> List[ArtifactPreview]:
@@ -2397,12 +2683,14 @@ def _resolve_assignment_summary(run_dir: Path, phase: str) -> AssignmentSummary:
 def _collect_run_detail(taxonomy: str, run_name: str, run_dir: Path) -> RunDetail:
     info = PhaseDetector(run_dir).detect()
     canonical_phase = _resolve_canonical_view_phase(taxonomy, run_name, run_dir, info.phase.value)
+    suppress_mismatch_banner = _suppress_detector_mismatch_banner(run_dir, canonical_phase)
     actions = build_operator_actions(run_name, canonical_phase, run_dir)
     primary_action = next((action for action in actions if action.primary), actions[0])
     judge_recommendation = _hydrate_judge_recommendation_targets(
         run_dir,
         _derive_judge_recommendation(run_dir, canonical_phase),
     )
+    review_summary = _derive_review_summary(run_dir, canonical_phase)
     human_blocker = _detect_run_human_blocker(run_dir)
     child_summaries = []
     if "/" not in run_name:
@@ -2415,8 +2703,8 @@ def _collect_run_detail(taxonomy: str, run_name: str, run_dir: Path) -> RunDetai
         phase=canonical_phase,
         next_role=_phase_owner_name(canonical_phase) or info.next_role,
         decision_reason=(
-            f"run_state current_phase={canonical_phase} overrides detector phase={info.phase.value}"
-            if canonical_phase != info.phase.value
+            f"Phase pinned to {canonical_phase} by workflow state (artifact detector suggests {info.phase.value})"
+            if canonical_phase != info.phase.value and not suppress_mismatch_banner
             else info.decision_reason
         ),
         artifacts=_build_artifact_inventory(run_dir),
@@ -2425,6 +2713,7 @@ def _collect_run_detail(taxonomy: str, run_name: str, run_dir: Path) -> RunDetai
         children=child_summaries,
         specialist_visibility=_resolve_specialist_visibility(run_dir, canonical_phase),
         assignment_summary=_resolve_assignment_summary(run_dir, canonical_phase),
+        review_summary=review_summary,
         judge_recommendation=judge_recommendation,
         human_blocker=human_blocker,
         priority=priority,
@@ -2782,13 +3071,14 @@ async def list_runs():
         elif "work" in str(run_dir):
             taxonomy = "work"
 
+        canonical_phase = _resolve_canonical_view_phase(taxonomy, name, run_dir, info.phase.value)
         priority, priority_reason = resolve_priority(name, priority_index)
         runs.append(
             RunSummary(
                 name=name,
                 taxonomy=taxonomy,
-                phase=info.phase.value,
-                next_role=info.next_role,
+                phase=canonical_phase,
+                next_role=_phase_owner_name(canonical_phase) or info.next_role,
                 child_count=len(repo.list_child_runs(name, taxonomy=taxonomy)),
                 has_plan_review=(run_dir / "plan_review.md").exists(),
                 has_build_review=(run_dir / "build_review.md").exists(),
@@ -2888,7 +3178,7 @@ async def create_specialist(
 async def confirm_specialist(
     taxonomy: str, run_name: str, request: ConfirmSpecialistRequest
 ):
-    """Write the operator-confirmed specialist code to execution-assignment.md."""
+    """Write the operator-confirmed specialist code and optional model override."""
     run_dir = _resolve_run_dir(taxonomy, run_name)
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="Run not found")
@@ -2896,11 +3186,27 @@ async def confirm_specialist(
     artifact_path = _write_confirmed_specialist(
         run_dir, request.role, request.specialist_code, request.source
     )
+    execution_artifact_path = _write_execution_target_override(
+        run_dir,
+        request.role,
+        request.provider,
+    )
+    if execution_artifact_path is not None:
+        artifact_path = execution_artifact_path
+    model_artifact_path: str | None = None
+    if request.apply_model_assignment:
+        model_artifact_path = _write_model_assignment_override(
+            run_dir,
+            request.role,
+            request.provider,
+            request.model,
+        )
     return ConfirmSpecialistResponse(
         written=True,
         specialist_code=request.specialist_code,
         artifact_path=artifact_path,
         target_run_name=run_name,
+        model_artifact_path=model_artifact_path,
     )
 
 
@@ -3010,6 +3316,7 @@ async def save_rerun_comment(taxonomy: str, run_name: str, request: SaveRerunCom
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="Run not found")
     artifact_name, artifact_path, appended_at = _append_rerun_comment(run_dir, request.action_id, request.comment_text)
+    _record_human_blocked_comment_outcome(run_dir, request.comment_text)
 
     comment_artifact = RERUN_ACTION_TO_ARTIFACT.get(request.action_id, "")
     viewer_db.insert_rerun_comment(
@@ -3385,6 +3692,150 @@ def _write_confirmed_specialist(
         return str(assignment_path)
 
 
+_MODEL_ROLE_DISPLAY = {
+    "Planner": "Planner",
+    "Builder": "Builder",
+    "Critic": "Critic",
+    "Judge": "Judge",
+    "JuniorBuilder": "JuniorBuilder",
+}
+
+_CLI_TOOL_BY_PROVIDER = {
+    "anthropic": ("cli", "claude"),
+    "openai": ("cli", "codex"),
+    "gemini": ("cli", "gemini-cli"),
+    "human": ("human", "human"),
+}
+
+
+def _write_execution_target_override(run_dir: Path, role: str, provider: str) -> str | None:
+    provider_value = (provider or "").strip().lower()
+    override = _CLI_TOOL_BY_PROVIDER.get(provider_value)
+    if override is None:
+        return None
+
+    assignment_path = run_dir / "execution-assignment.md"
+    if not assignment_path.exists():
+        return None
+
+    role_display = _MODEL_ROLE_DISPLAY.get(role, role)
+    new_execution_type, new_tool = override
+    lines = assignment_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    out: list[str] = []
+    updated = False
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("|") or "---" in stripped:
+            out.append(line)
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) < 4 or cells[0] != role_display:
+            out.append(line)
+            continue
+        cells[1] = new_execution_type
+        cells[2] = new_tool
+        if len(cells) >= 5:
+            out.append(f"| {cells[0]} | {cells[1]} | {cells[2]} | {cells[3]} | {cells[4]} |\n")
+        else:
+            out.append(f"| {cells[0]} | {cells[1]} | {cells[2]} | {cells[3]} |\n")
+        updated = True
+
+    if not updated:
+        return None
+
+    assignment_path.write_text("".join(out), encoding="utf-8")
+    try:
+        return str(assignment_path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(assignment_path)
+
+
+def _write_model_assignment_override(
+    run_dir: Path,
+    role: str,
+    provider: str,
+    model: str,
+) -> str:
+    assignment_path = run_dir / "model-assignment.md"
+    role_display = _MODEL_ROLE_DISPLAY.get(role, role)
+    provider_value = (provider or "").strip().lower()
+    model_value = (model or "").strip()
+
+    if provider_value == "unset":
+        provider_value = ""
+        model_value = ""
+
+    is_human = provider_value == "human"
+    notes = (
+        "operator-selected from Select Specialist"
+        if provider_value or model_value or is_human
+        else "operator-cleared from Select Specialist"
+    )
+    row = (
+        f"| {role_display} | {provider_value} | {model_value} | "
+        f"{'yes' if is_human else 'no'} | {notes} |\n"
+    )
+
+    if assignment_path.exists():
+        lines = assignment_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    else:
+        lines = [
+            "# Model Assignment\n",
+            "\n",
+            "## Run Name\n",
+            "\n",
+            f"{run_dir.name}\n",
+            "\n",
+            "## Goal Summary\n",
+            "\n",
+            "\n",
+            "---\n",
+            "\n",
+            "## Role Assignments\n",
+            "\n",
+            "| Role | Provider | Model | Human? | Notes |\n",
+            "|---|---|---|---|---|\n",
+        ]
+
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if line.strip().startswith(f"| {role_display} |"):
+            if not replaced:
+                out.append(row)
+                replaced = True
+            continue
+        out.append(line)
+
+    if not replaced:
+        insert_at = None
+        for idx, line in enumerate(out):
+            if line.strip() == "|---|---|---|---|---|":
+                insert_at = idx + 1
+                break
+        if insert_at is None:
+            if out and not out[-1].endswith("\n"):
+                out[-1] += "\n"
+            out.extend(
+                [
+                    "\n## Role Assignments\n",
+                    "\n",
+                    "| Role | Provider | Model | Human? | Notes |\n",
+                    "|---|---|---|---|---|\n",
+                    row,
+                ]
+            )
+        else:
+            out.insert(insert_at, row)
+
+    assignment_path.write_text("".join(out), encoding="utf-8")
+    try:
+        return str(assignment_path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(assignment_path)
+
+
 def _summarize_markdown_line(text: str) -> str:
     for line in (text or "").splitlines():
         stripped = line.strip().lstrip("-").strip()
@@ -3734,6 +4185,1066 @@ async def judge_chat(taxonomy: str, run_name: str, request: JudgeChatRequest):
         )
 
     return JudgeChatResponse(reply=reply)
+
+
+# ---------------------------------------------------------------------------
+# Conversation stream (SSE) — watches build*.md / review*.md for changes
+# ---------------------------------------------------------------------------
+
+def _extract_conversation_summary(path: Path, role: str) -> str:
+    """Extract a concise summary from a build or review artifact."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+    lines = text.splitlines()
+
+    # Try to find meaningful sections by heading
+    section_keywords = {
+        "Builder": [
+            "## summary", "## what was built", "## build summary", "## decision", "## changes", "## implementation",
+            "## 概要", "## 実装内容", "## 変更内容", "## 判断", "## ビルド概要", "## 実施内容", "## 成果物",
+        ],
+        "Critic": [
+            "## overall", "## assessment", "## summary", "## verdict", "## judgment", "## findings",
+            "## 総評", "## 評価", "## 概要", "## 判定", "## 所見", "## レビュー結果", "## 結論",
+        ],
+    }
+    target_keys = section_keywords.get(role, [])
+
+    in_section = False
+    collected: list[str] = []
+    for line in lines:
+        ll = line.strip().lower()
+        if any(ll.startswith(k) for k in target_keys):
+            in_section = True
+            collected = []
+            continue
+        if in_section:
+            if line.startswith("## "):
+                break
+            stripped = line.strip()
+            if stripped and not stripped.startswith("<!--"):
+                collected.append(stripped)
+            if len(collected) >= 8:
+                break
+
+    if collected:
+        summary = " ".join(collected)
+        return summary[:400] + ("…" if len(summary) > 400 else "")
+
+    # Fallback: first meaningful paragraph after front matter
+    body_lines: list[str] = []
+    skip_header = True
+    for line in lines:
+        stripped = line.strip()
+        if skip_header and (stripped.startswith("#") or stripped.startswith("<!--") or not stripped):
+            continue
+        skip_header = False
+        if stripped:
+            body_lines.append(stripped)
+        if len(body_lines) >= 5:
+            break
+
+    fallback = " ".join(body_lines)
+    return fallback[:300] + ("…" if len(fallback) > 300 else "")
+
+
+def _get_conversation_events(run_dir: Path) -> list[dict]:
+    """Return all conversation events (build + review artifacts) sorted by mtime."""
+    events: list[dict] = []
+
+    build_patterns = ["build.md", "build_rerun_*.md"]
+    review_patterns = ["review.md", "review_rerun_*.md"]
+
+    skip_names = {"build_review.md", "review_review.md"}
+
+    for pattern, role in [(p, "Builder") for p in build_patterns] + [(p, "Critic") for p in review_patterns]:
+        for f in sorted(run_dir.glob(pattern), key=lambda p: p.stat().st_mtime):
+            if f.name in skip_names:
+                continue
+            try:
+                mtime = f.stat().st_mtime
+            except OSError:
+                continue
+            summary = _extract_conversation_summary(f, role)
+            if summary:
+                events.append({
+                    "role": role,
+                    "file": f.name,
+                    "summary": summary,
+                    "mtime": mtime,
+                })
+
+    events.sort(key=lambda e: e["mtime"])
+    return events
+
+
+@app.get("/api/runs/{taxonomy}/{run_name:path}/conversation-stream")
+async def conversation_stream(taxonomy: str, run_name: str):
+    """SSE endpoint: streams conversation events from build/review artifact changes."""
+    run_dir = _resolve_run_dir(taxonomy, run_name)
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    async def generate():
+        sent_keys: set[str] = set()  # "filename:mtime"
+        last_phase = ""
+        last_stop_pending = False
+
+        while True:
+            # Phase change event
+            try:
+                from apsf.core.state.run_state_repository import RunStateRepository
+                state = RunStateRepository(run_dir).load()
+                phase = state.current_phase if state else ""
+            except Exception:
+                phase = ""
+
+            if phase != last_phase:
+                last_phase = phase
+                payload = json.dumps({"type": "phase", "phase": phase})
+                yield f"data: {payload}\n\n"
+
+            # Stop signal change event
+            stop_pending = (run_dir / _STOP_SIGNAL_FILE).exists()
+            if stop_pending != last_stop_pending:
+                last_stop_pending = stop_pending
+                payload = json.dumps({"type": "stop_signal", "pending": stop_pending})
+                yield f"data: {payload}\n\n"
+
+            # File change events
+            try:
+                events = _get_conversation_events(run_dir)
+            except Exception:
+                events = []
+
+            for ev in events:
+                key = f"{ev['file']}:{ev['mtime']}"
+                if key not in sent_keys:
+                    sent_keys.add(key)
+                    payload = json.dumps({
+                        "type": "message",
+                        "role": ev["role"],
+                        "file": ev["file"],
+                        "summary": ev["summary"],
+                        "mtime": ev["mtime"],
+                    })
+                    yield f"data: {payload}\n\n"
+
+            await asyncio.sleep(3)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Auto-loop management
+# ---------------------------------------------------------------------------
+
+_STOP_SIGNAL_FILE = ".apsf_stop_requested"
+_LOOP_PID_FILE = ".apsf_loop_pid"
+_JUDGE_ADVISORY_FILE = "judge_advisory.json"
+_AUTO_LOOP_LOG_FILE = "auto_loop.log"
+_auto_loop_procs: dict[str, subprocess.Popen[str]] = {}  # key: "taxonomy/run_name"
+_auto_loop_logs: dict[str, object] = {}
+_CANONICAL_JUDGE_ADVISORY_SOURCE = CANONICAL_JUDGE_ADVISORY_SOURCE
+_AUTO_LOOP_RECOMMENDATION_ALLOWLIST = JUDGE_ADVISORY_RECOMMENDATIONS
+_AUTO_LOOP_EXPECTED_PROCESS_NAMES = frozenset({"powershell.exe", "pwsh.exe"})
+
+
+def _auto_loop_key(taxonomy: str, run_name: str) -> str:
+    return f"{taxonomy}/{run_name}"
+
+
+def _judge_advisory_path(run_dir: Path) -> Path:
+    return run_dir / _JUDGE_ADVISORY_FILE
+
+
+def _judge_advisory_payload(
+    run_dir: Path,
+    *,
+    recommendation: str | None,
+    human_owned_blocker: bool | None,
+    advisory_source: str,
+    phase: str,
+    generated_at: str | None = None,
+    source: str | None = None,
+    ownership_status: str | None = None,
+    ownership_detail: str | None = None,
+    run_id: str | None = None,
+    freshness_token: str | None = None,
+    human_owned_blocker_state: str | None = None,
+) -> dict[str, Any]:
+    return canonical_judge_advisory_payload(
+        run_dir,
+        recommendation=recommendation,
+        human_owned_blocker=human_owned_blocker,
+        human_owned_blocker_state=human_owned_blocker_state,
+        advisory_source=advisory_source,
+        phase=phase,
+        generated_at=generated_at,
+        source=source,
+        ownership_status=ownership_status,
+        ownership_detail=ownership_detail,
+        run_id=run_id,
+        freshness_token=freshness_token,
+    )
+
+
+def _get_phase_entered_at(run_dir: Path) -> str:
+    """Read phase_entered_at from run_state.json. Returns "" if unavailable."""
+    try:
+        from apsf.core.state.run_state_repository import RunStateRepository
+        state = RunStateRepository(run_dir).load()
+        if state is not None:
+            return str(getattr(state, "phase_entered_at", "") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _write_judge_advisory_record(
+    run_dir: Path,
+    *,
+    recommendation: str | None,
+    human_owned_blocker: bool | None,
+    phase: str,
+    source: str,
+    advisory_source: str = _CANONICAL_JUDGE_ADVISORY_SOURCE,
+    ownership_status: str | None = None,
+    ownership_detail: str | None = None,
+    freshness_token: str | None = None,
+) -> dict[str, Any]:
+    token = freshness_token or _get_phase_entered_at(run_dir) or None
+    return write_canonical_judge_advisory(
+        run_dir,
+        recommendation=recommendation,
+        human_owned_blocker=human_owned_blocker,
+        phase=phase,
+        source=source,
+        advisory_source=advisory_source,
+        ownership_status=ownership_status,
+        ownership_detail=ownership_detail,
+        freshness_token=token,
+    )
+
+
+def _refresh_judge_advisory_record(run_dir: Path) -> dict[str, Any]:
+    canonical_phase = _resolve_agent_os_phase(run_dir)
+    blocker_decision = get_build_gate_decision(run_dir)
+    ownership_status = str(blocker_decision.get("status") or "").strip() or None
+    ownership_detail = str(blocker_decision.get("detail") or "").strip() or None
+    path = _judge_advisory_path(run_dir)
+
+    if not path.exists():
+        return _judge_advisory_payload(
+            run_dir,
+            recommendation=None,
+            human_owned_blocker=None,
+            human_owned_blocker_state=None,
+            advisory_source="judge_advisory_missing",
+            phase=canonical_phase,
+            source=f"{_JUDGE_ADVISORY_FILE}:missing",
+            ownership_status=ownership_status,
+            ownership_detail=ownership_detail,
+        )
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _judge_advisory_payload(
+            run_dir,
+            recommendation=None,
+            human_owned_blocker=None,
+            human_owned_blocker_state=None,
+            advisory_source="judge_advisory_invalid",
+            phase=canonical_phase,
+            source=f"{_JUDGE_ADVISORY_FILE}:invalid-json",
+            ownership_status=ownership_status,
+            ownership_detail=ownership_detail,
+        )
+
+    recommendation = payload.get("recommendation")
+    if recommendation is not None:
+        recommendation = str(recommendation).strip() or None
+    if recommendation is not None and recommendation not in _AUTO_LOOP_RECOMMENDATION_ALLOWLIST:
+        raw_human_owned_blocker = payload.get("human_owned_blocker")
+        human_owned_blocker_state = "valid" if isinstance(raw_human_owned_blocker, bool) else "invalid"
+        return _judge_advisory_payload(
+            run_dir,
+            recommendation=recommendation,
+            human_owned_blocker=raw_human_owned_blocker if isinstance(raw_human_owned_blocker, bool) else None,
+            human_owned_blocker_state=human_owned_blocker_state,
+            advisory_source=str(payload.get("advisory_source") or "judge_advisory_invalid"),
+            phase=str(payload.get("phase") or canonical_phase),
+            generated_at=str(payload.get("generated_at") or datetime.now(timezone.utc).isoformat()),
+            source=f"{_JUDGE_ADVISORY_FILE}:unrecognized-recommendation",
+            ownership_status=ownership_status,
+            ownership_detail=ownership_detail,
+            run_id=str(payload.get("run_id") or run_dir.name),
+            freshness_token=str(payload.get("freshness_token") or "").strip() or None,
+        )
+
+    human_owned_blocker_state = "valid"
+    if "human_owned_blocker" not in payload:
+        human_owned_blocker = None
+        human_owned_blocker_state = "invalid"
+    else:
+        human_owned_blocker = payload.get("human_owned_blocker")
+        if not isinstance(human_owned_blocker, bool):
+            human_owned_blocker = None
+            human_owned_blocker_state = "invalid"
+
+    freshness_token = str(payload.get("freshness_token") or "").strip() or None
+
+    return _judge_advisory_payload(
+        run_dir,
+        recommendation=recommendation,
+        human_owned_blocker=human_owned_blocker,
+        human_owned_blocker_state=human_owned_blocker_state,
+        advisory_source=str(payload.get("advisory_source") or "judge_advisory_invalid"),
+        phase=str(payload.get("phase") or canonical_phase),
+        generated_at=str(payload.get("generated_at") or datetime.now(timezone.utc).isoformat()),
+        source=str(payload.get("source") or path.name),
+        ownership_status=ownership_status,
+        ownership_detail=ownership_detail,
+        run_id=str(payload.get("run_id") or run_dir.name),
+        freshness_token=freshness_token,
+    )
+
+
+def _evaluate_improve_auto_loop_decision(run_dir: Path) -> dict[str, Any]:
+    advisory = _refresh_judge_advisory_record(run_dir)
+    recommendation = advisory.get("recommendation")
+    if recommendation is not None:
+        recommendation = str(recommendation).strip() or None
+    advisory_source = str(advisory.get("advisory_source") or "").strip()
+    advisory_run_id = str(advisory.get("run_id") or "").strip()
+    ownership_status = str(advisory.get("ownership_status") or "").strip() or None
+    human_owned_blocker = advisory.get("human_owned_blocker")
+    human_owned_blocker_state = str(advisory.get("human_owned_blocker_state") or "").strip() or None
+
+    # Freshness check: advisory must belong to the current IMPROVE_NEEDED cycle.
+    # Fail-closed policy: BOTH tokens must be present and match.
+    # If either token is absent (legacy run / legacy advisory) or they mismatch,
+    # the advisory is treated as stale and auto-reroute is blocked.
+    # Legacy runs without phase_entered_at must re-enter IMPROVE_NEEDED via a new
+    # REVIEW cycle to establish a freshness anchor before auto-loop will reroute.
+    advisory_freshness_token = str(advisory.get("freshness_token") or "").strip() or None
+    current_phase_entered_at = _get_phase_entered_at(run_dir)
+    advisory_is_stale = not (
+        advisory_freshness_token is not None
+        and current_phase_entered_at != ""
+        and advisory_freshness_token == current_phase_entered_at
+    )
+
+    action = "STOP"
+    reason = "advisory_missing"
+
+    if recommendation is None and advisory_source == "judge_advisory_missing":
+        reason = "advisory_missing"
+    elif recommendation is None and advisory_source == "judge_advisory_invalid":
+        reason = "advisory_source_invalid"
+    elif advisory_source != _CANONICAL_JUDGE_ADVISORY_SOURCE or advisory_run_id != run_dir.name:
+        reason = "advisory_source_invalid"
+    elif advisory_is_stale:
+        reason = "advisory_stale"
+    elif ownership_status == "UNRECORDED":
+        reason = "ownership_unrecorded"
+    elif ownership_status == "CORRUPT":
+        reason = "ownership_corrupt"
+    elif human_owned_blocker_state != "valid":
+        reason = "human_owned_blocker_invalid"
+    elif human_owned_blocker is True:
+        reason = "human_owned_blocker"
+    elif recommendation == "Return to Build":
+        action = "BUILD_NEEDED"
+        reason = "auto_reroute_build"
+    elif recommendation == "Return to Plan":
+        action = "PLAN_NEEDED"
+        reason = "auto_reroute_plan"
+    elif recommendation == "Accept":
+        reason = "accept_is_human_owned"
+    elif recommendation is None:
+        reason = "advisory_missing"
+    else:
+        reason = "advisory_unrecognized"
+
+    return {
+        **advisory,
+        "action": action,
+        "reason": reason,
+        "stop_reason": _improve_auto_loop_stop_reason(reason),
+        "log_line": _format_improve_auto_loop_log_line(
+            {
+                **advisory,
+                "action": action,
+                "reason": reason,
+            }
+        ),
+    }
+
+
+def _improve_auto_loop_stop_reason(reason: str) -> str | None:
+    if reason in {
+        "advisory_missing",
+        "advisory_source_invalid",
+        "advisory_stale",
+        "ownership_unrecorded",
+        "ownership_corrupt",
+        "human_owned_blocker_invalid",
+    }:
+        return reason
+    if reason:
+        return "human_phase"
+    return None
+
+
+def _format_improve_auto_loop_log_line(decision: dict[str, Any]) -> str:
+    advisory_source = str(decision.get("advisory_source") or "").strip()
+    recommendation = str(decision.get("recommendation") or "").strip()
+    human_owned_blocker = decision.get("human_owned_blocker")
+    action = str(decision.get("action") or "STOP").strip() or "STOP"
+    reason = str(decision.get("reason") or "advisory_missing").strip() or "advisory_missing"
+    return (
+        f"[IMPROVE_NEEDED] advisory_source={advisory_source} "
+        f"recommendation={recommendation} "
+        f"human_owned_blocker={human_owned_blocker} "
+        f"action={action} reason={reason}"
+    )
+
+
+def _read_auto_loop_marker(run_dir: Path) -> dict[str, Any] | None:
+    pid_file = run_dir / _LOOP_PID_FILE
+    try:
+        raw = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+
+    with contextlib.suppress(json.JSONDecodeError):
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            pid = payload.get("pid")
+            try:
+                pid = int(pid)
+            except (TypeError, ValueError):
+                return None
+            if pid <= 0:
+                return None
+            command_line = payload.get("command_line")
+            if isinstance(command_line, list):
+                command_line = [str(part) for part in command_line]
+            elif command_line is not None:
+                command_line = str(command_line).strip() or None
+            else:
+                command_line = None
+            process_name = str(payload.get("process_name") or "").strip() or None
+            started_at = str(payload.get("started_at") or "").strip() or None
+            return {
+                "pid": pid,
+                "process_name": process_name,
+                "started_at": started_at,
+                "command_line": command_line,
+            }
+
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    if pid <= 0:
+        return None
+    return {"pid": pid, "process_name": None, "started_at": None, "command_line": None}
+
+
+def _tasklist_row_for_pid(pid: int) -> list[str] | None:
+    try:
+        completed = subprocess.run(
+            [
+                "tasklist",
+                "/FI",
+                f"PID eq {pid}",
+                "/FO",
+                "CSV",
+                "/NH",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return None
+
+    if completed.returncode != 0:
+        return None
+
+    stdout = completed.stdout.strip()
+    if not stdout or "No tasks are running" in stdout:
+        return None
+
+    with contextlib.suppress(Exception):
+        import csv
+
+        row = next(csv.reader([stdout]))
+        if row:
+            return row
+    return None
+
+
+def _pid_exists(pid: int) -> bool:
+    if psutil is not None:
+        with contextlib.suppress(Exception):
+            return bool(psutil.pid_exists(pid))
+    return _tasklist_row_for_pid(pid) is not None
+
+
+def _powershell_process_identity_for_pid(pid: int) -> dict[str, Any] | None:
+    try:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "$p = Get-CimInstance Win32_Process -Filter \"ProcessId = "
+                    f"{pid}\"; "
+                    "if ($null -eq $p) { exit 1 }; "
+                    "[pscustomobject]@{"
+                    "name=$p.Name;"
+                    "command_line=$p.CommandLine;"
+                    "started_at=$p.CreationDate"
+                    "} | ConvertTo-Json -Compress"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return None
+
+    if completed.returncode != 0:
+        return None
+
+    with contextlib.suppress(json.JSONDecodeError):
+        payload = json.loads(completed.stdout)
+        if isinstance(payload, dict):
+            return {
+                "name": str(payload.get("name") or "").strip() or None,
+                "command_line": str(payload.get("command_line") or "").strip() or None,
+                "started_at": str(payload.get("started_at") or "").strip() or None,
+            }
+    return None
+
+
+def _process_name_for_pid(pid: int) -> str | None:
+    if psutil is not None:
+        with contextlib.suppress(Exception):
+            process = psutil.Process(pid)
+            return str(process.name()).strip() or None
+
+    row = _tasklist_row_for_pid(pid)
+    if not row:
+        return None
+    name = str(row[0]).strip()
+    return name or None
+
+
+def _is_expected_auto_loop_process_name(process_name: str | None) -> bool:
+    if process_name is None:
+        return False
+    return process_name.lower() in _AUTO_LOOP_EXPECTED_PROCESS_NAMES
+
+
+def _process_identity_for_pid(pid: int) -> dict[str, Any] | None:
+    if psutil is not None:
+        with contextlib.suppress(Exception):
+            process = psutil.Process(pid)
+            return {
+                "pid": pid,
+                "name": str(process.name()).strip() or None,
+                "command_line": [str(part) for part in process.cmdline()],
+                "started_at": datetime.fromtimestamp(process.create_time(), tz=timezone.utc).isoformat(),
+            }
+
+    fallback = _powershell_process_identity_for_pid(pid)
+    if fallback is None:
+        return None
+    return {
+        "pid": pid,
+        "name": fallback.get("name"),
+        "command_line": fallback.get("command_line"),
+        "started_at": fallback.get("started_at"),
+    }
+
+
+def _normalize_command_line(value: Any) -> str | None:
+    if isinstance(value, list):
+        parts = [str(part).strip() for part in value if str(part).strip()]
+        return " ".join(parts) if parts else None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _matches_auto_loop_marker(marker: dict[str, Any], identity: dict[str, Any] | None) -> bool:
+    if identity is None:
+        return False
+
+    process_name = str(identity.get("name") or identity.get("process_name") or "").strip() or None
+    if not _is_expected_auto_loop_process_name(process_name):
+        return False
+
+    marker_name = str(marker.get("process_name") or "").strip() or None
+    if marker_name is not None and process_name is not None and marker_name.lower() != process_name.lower():
+        return False
+
+    marker_started_at = str(marker.get("started_at") or "").strip() or None
+    identity_started_at = str(identity.get("started_at") or "").strip() or None
+    if marker_started_at is not None and identity_started_at != marker_started_at:
+        return False
+
+    marker_command_line = _normalize_command_line(marker.get("command_line"))
+    identity_command_line = _normalize_command_line(identity.get("command_line"))
+    if marker_command_line is not None and identity_command_line != marker_command_line:
+        return False
+
+    return True
+
+
+def _close_auto_loop_log(key: str) -> None:
+    handle = _auto_loop_logs.pop(key, None)
+    if handle is None:
+        return
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
+def _is_auto_loop_running(taxonomy: str, run_name: str) -> bool:
+    key = _auto_loop_key(taxonomy, run_name)
+    proc = _auto_loop_procs.get(key)
+    if proc is not None:
+        if proc.poll() is None:
+            return True
+        del _auto_loop_procs[key]
+        _close_auto_loop_log(key)
+
+    # Fallback: validate PID marker against an actual PowerShell process.
+    try:
+        run_dir = _resolve_run_dir(taxonomy, run_name)
+        marker = _read_auto_loop_marker(run_dir)
+        if marker is None:
+            return False
+        pid = int(marker["pid"])
+        if not _pid_exists(pid):
+            return False
+        return _matches_auto_loop_marker(marker, _process_identity_for_pid(pid))
+    except Exception:
+        pass
+
+    return False
+
+
+def _clear_auto_loop_markers(run_dir: Path) -> None:
+    """Remove stale auto-loop marker files after the loop is confirmed stopped."""
+    try:
+        (run_dir / _LOOP_PID_FILE).unlink(missing_ok=True)
+    except Exception:
+        pass
+    try:
+        (run_dir / _STOP_SIGNAL_FILE).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+class AutoLoopOptions(BaseModel):
+    plan_script: str = "apsf-codex-plan.ps1"
+    build_script: str = "apsf-codex-build.ps1"
+    review_script: str = "apsf-claude-act.ps1"
+    max_cycles: int = 10
+
+
+class JudgeAdvisoryResponse(BaseModel):
+    recommendation: str | None = None
+    human_owned_blocker: bool | None = None
+    advisory_source: str
+    run_id: str
+    generated_at: str
+    phase: str
+    ownership_status: str | None = None
+    ownership_detail: str | None = None
+    source: str | None = None
+    freshness_token: str | None = None
+
+
+@app.post("/api/runs/{taxonomy}/{run_name:path}/start-auto-loop")
+async def start_auto_loop(taxonomy: str, run_name: str, options: AutoLoopOptions = AutoLoopOptions()):
+    """Spawn apsf-auto-loop.ps1 as a background process."""
+    run_dir = _resolve_run_dir(taxonomy, run_name)
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    if _is_auto_loop_running(taxonomy, run_name):
+        return {"status": "already_running"}
+
+    # Remove stale stop signal if present
+    stop_file = run_dir / _STOP_SIGNAL_FILE
+    if stop_file.exists():
+        stop_file.unlink()
+
+    script = PROJECT_ROOT / "scripts" / "apsf-auto-loop.ps1"
+    powershell = os.path.join(
+        os.environ.get("WINDIR", r"C:\Windows"),
+        "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+    )
+
+    # Build the run name argument (taxonomy/run_name style)
+    run_arg = f"{taxonomy}/{run_name}"
+    log_path = run_dir / _AUTO_LOOP_LOG_FILE
+    log_handle = None
+    try:
+        normalize_text_artifact_to_utf8(log_path)
+        log_handle = log_path.open("a", encoding="utf-8", errors="replace")
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        log_handle.write(
+            f"\n=== auto-loop start {timestamp} ===\n"
+            f"run={run_arg}\n"
+            f"plan_script={options.plan_script}\n"
+            f"build_script={options.build_script}\n"
+            f"review_script={options.review_script}\n"
+            f"max_cycles={options.max_cycles}\n\n"
+        )
+        log_handle.flush()
+    except Exception:
+        log_handle = None
+
+    proc = subprocess.Popen(
+        [
+            powershell, "-NoProfile", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass",
+            "-File", str(script),
+            run_arg,
+            "-PlanScript", options.plan_script,
+            "-BuildScript", options.build_script,
+            "-ReviewScript", options.review_script,
+            "-MaxCycles", str(options.max_cycles),
+        ],
+        cwd=str(PROJECT_ROOT),
+        stdout=log_handle if log_handle is not None else subprocess.DEVNULL,
+        stderr=subprocess.STDOUT if log_handle is not None else subprocess.DEVNULL,
+    )
+    key = _auto_loop_key(taxonomy, run_name)
+    _auto_loop_procs[key] = proc
+    if log_handle is not None:
+        _auto_loop_logs[key] = log_handle
+    return {"status": "started", "pid": proc.pid, "log_path": str(log_path)}
+
+
+@app.get("/api/runs/{taxonomy}/{run_name:path}/judge-advisory", response_model=JudgeAdvisoryResponse)
+async def get_judge_advisory(taxonomy: str, run_name: str):
+    run_dir = _resolve_run_dir(taxonomy, run_name)
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+    return JudgeAdvisoryResponse(**_refresh_judge_advisory_record(run_dir))
+
+
+class WriteJudgeAdvisoryRequest(BaseModel):
+    recommendation: str  # "Return to Build" | "Return to Plan" | "Accept"
+    human_owned_blocker: bool = False
+    source: str = "judge_decision"
+
+
+@app.post("/api/runs/{taxonomy}/{run_name:path}/judge-advisory", response_model=JudgeAdvisoryResponse)
+async def write_judge_advisory(taxonomy: str, run_name: str, request: WriteJudgeAdvisoryRequest):
+    """Write a canonical judge advisory for the current IMPROVE_NEEDED cycle.
+
+    The advisory source is always judge_structured. freshness_token is derived
+    from the current run_state.phase_entered_at so it is valid for this cycle only.
+    """
+    run_dir = _resolve_run_dir(taxonomy, run_name)
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    blocker_decision = get_build_gate_decision(run_dir)
+    ownership_status = str(blocker_decision.get("status") or "").strip() or None
+    ownership_detail = str(blocker_decision.get("detail") or "").strip() or None
+
+    try:
+        payload = _write_judge_advisory_record(
+            run_dir,
+            recommendation=request.recommendation,
+            human_owned_blocker=request.human_owned_blocker,
+            phase=_resolve_agent_os_phase(run_dir),
+            source=request.source,
+            ownership_status=ownership_status,
+            ownership_detail=ownership_detail,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return JudgeAdvisoryResponse(**payload)
+
+
+@app.get("/api/runs/{taxonomy}/{run_name:path}/auto-loop-status")
+async def auto_loop_status(taxonomy: str, run_name: str):
+    """Check whether auto-loop is running for this run."""
+    run_dir = _resolve_run_dir(taxonomy, run_name)
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    running = _is_auto_loop_running(taxonomy, run_name)
+    stop_pending = False
+    if running:
+        try:
+            stop_pending = (run_dir / _STOP_SIGNAL_FILE).exists()
+        except Exception:
+            pass
+    else:
+        _clear_auto_loop_markers(run_dir)
+        stop_pending = False
+    return {"running": running, "stop_pending": stop_pending}
+
+
+@app.post("/api/runs/{taxonomy}/{run_name:path}/request-stop")
+async def request_stop(taxonomy: str, run_name: str):
+    """Write stop-signal file so apsf-auto-loop.ps1 halts after the current phase."""
+    run_dir = _resolve_run_dir(taxonomy, run_name)
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+    (run_dir / _STOP_SIGNAL_FILE).write_text("stop requested\n", encoding="utf-8")
+    return {"status": "stop_requested"}
+
+
+@app.delete("/api/runs/{taxonomy}/{run_name:path}/request-stop")
+async def cancel_stop(taxonomy: str, run_name: str):
+    """Remove stop-signal file (cancel a pending stop request)."""
+    run_dir = _resolve_run_dir(taxonomy, run_name)
+    sig = run_dir / _STOP_SIGNAL_FILE
+    if sig.exists():
+        sig.unlink()
+    return {"status": "cancelled"}
+
+
+class AcceptImproveRequest(BaseModel):
+    comment: str = ""  # Judge's acceptance note (optional)
+
+
+@app.post("/api/runs/{taxonomy}/{run_name:path}/accept")
+async def accept_improve(taxonomy: str, run_name: str, request: AcceptImproveRequest):
+    """Write improve.md with Judge acceptance note and advance to RESULT_NEEDED.
+
+    Also writes judge_advisory.json with recommendation=Accept so the advisory
+    record reflects the Judge's decision at completion time.
+    """
+    run_dir = _resolve_run_dir(taxonomy, run_name)
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    note = request.comment.strip() or "採用。RESULT_NEEDED に進む。"
+    improve_content = f"# Improve\n\n## Judge Decision\n\n採用 — RESULT_NEEDED に進む。\n\n## Comment\n\n{note}\n"
+    (run_dir / "improve.md").write_text(improve_content, encoding="utf-8")
+
+    # Record canonical advisory before transitioning so the advisory reflects
+    # the Judge's Accept decision for this IMPROVE_NEEDED cycle.
+    blocker_decision = get_build_gate_decision(run_dir)
+    with contextlib.suppress(Exception):
+        _write_judge_advisory_record(
+            run_dir,
+            recommendation="Accept",
+            human_owned_blocker=False,
+            phase="IMPROVE_NEEDED",
+            source="accept_improve",
+            ownership_status=str(blocker_decision.get("status") or "").strip() or None,
+            ownership_detail=str(blocker_decision.get("detail") or "").strip() or None,
+        )
+
+    from apsf.core.state.transition_service import TransitionService, TransitionError
+    try:
+        result = TransitionService().transition(
+            run_dir,
+            to_phase="RESULT_NEEDED",
+            actor="Judge",
+            reason=f"Accepted via GUI: {note[:80]}",
+        )
+    except TransitionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    if not result.success:
+        raise HTTPException(status_code=409, detail=result.error or "Transition failed")
+
+    return {"status": "ok", "phase": "RESULT_NEEDED"}
+
+
+class GenerateResultRequest(BaseModel):
+    comment: str  # Goal-owner's OK comment / summary to include in result.md
+
+
+class GenerateResultResponse(BaseModel):
+    result_path: str
+    content: str
+
+
+_GENERATE_RESULT_PROMPT_TEMPLATE = """You are writing result.md for an APSF (AI Problem Solving Framework) run.
+
+APSF workflow: Goal → Plan → Build → Review → Result
+
+The Goal-owner has approved this run. Your job is to write a concise, factual result.md that records:
+1. What was built / decided
+2. Whether all Success Criteria were met
+3. Key findings or decisions the Goal-owner wants to remember
+4. Lessons learned or patterns to reuse
+
+## RUN ARTIFACTS
+
+{context}
+
+## GOAL-OWNER'S OK COMMENT
+
+{comment}
+
+## INSTRUCTIONS
+
+Write result.md now. Use this structure:
+
+# Result
+
+## 総合判定
+
+[Pass / Conditional Pass / Partial — one line]
+
+## 成果物
+
+[Bullet list of what was built / produced]
+
+## Success Criteria
+
+| Criterion | Status | Notes |
+|---|---|---|
+[fill in from goal.md]
+
+## Goal-owner コメント
+
+{comment}
+
+## Lessons Learned
+
+[2-4 bullet points: what worked, what to reuse, what to watch for next time]
+
+Write only the result.md content. No preamble, no explanation outside the document.
+"""
+
+
+@app.post(
+    "/api/runs/{taxonomy}/{run_name:path}/generate-result",
+    response_model=GenerateResultResponse,
+)
+async def generate_result(taxonomy: str, run_name: str, request: GenerateResultRequest):
+    """Generate result.md from run artifacts + goal-owner comment, then close the run."""
+    run_dir = _resolve_run_dir(taxonomy, run_name)
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    context = _build_judge_chat_context(run_dir)
+
+    # Also include improve.md if present
+    improve_path = run_dir / "improve.md"
+    if improve_path.exists():
+        text = improve_path.read_text(encoding="utf-8").strip()
+        if text:
+            context += f"\n\n---\n\n## IMPROVE\n\n{text}"
+
+    prompt = _GENERATE_RESULT_PROMPT_TEMPLATE.format(
+        context=context,
+        comment=request.comment.strip(),
+    )
+
+    cli_args, cli_label = _resolve_judge_chat_cli()
+
+    result = await asyncio.to_thread(
+        subprocess.run,
+        cli_args,
+        input=prompt,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"{cli_label} CLI error: {result.stderr[:300]}")
+
+    content = result.stdout.strip()
+    if not content:
+        stderr_hint = result.stderr.strip()[:200] if result.stderr else "no stderr"
+        raise HTTPException(
+            status_code=500,
+            detail=f"{cli_label} CLI returned empty response (stderr: {stderr_hint})",
+        )
+
+    # Save result.md
+    result_path = run_dir / "result.md"
+    result_path.write_text(content, encoding="utf-8")
+
+    # Advance phase to COMPLETE
+    from apsf.core.state.transition_service import TransitionService, TransitionError
+    try:
+        tr = TransitionService().transition(
+            run_dir,
+            to_phase="COMPLETE",
+            actor="Judge",
+            reason=f"Result approved via GUI: {request.comment[:80]}",
+        )
+        if not tr.success:
+            raise HTTPException(status_code=409, detail=tr.error or "Phase transition to COMPLETE failed")
+    except TransitionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    return GenerateResultResponse(result_path=str(result_path), content=content)
+
+
+@app.post(
+    "/api/runs/{taxonomy}/{parent_run_id}/child-runs",
+    response_model=CreateChildRunResponse,
+)
+async def create_child_run(taxonomy: str, parent_run_id: str, request: CreateChildRunRequest):
+    if request.taxonomy != taxonomy:
+        raise HTTPException(status_code=400, detail="taxonomy mismatch")
+
+    parent_dir = repo.get_run_dir(parent_run_id, taxonomy=taxonomy)
+    if not parent_dir.exists():
+        raise HTTPException(status_code=404, detail="Parent run not found")
+
+    try:
+        child_dir = initialize_child_run(
+            repo=repo,
+            parent_run=parent_run_id,
+            child_run=request.run_id,
+            taxonomy=taxonomy,
+            title=request.title,
+            goal_text=request.goal,
+            force=False,
+        )
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return CreateChildRunResponse(
+        run_id=request.run_id,
+        path=str(child_dir),
+        status="created",
+    )
 
 
 @app.get("/api/runs/{taxonomy}/{run_name:path}", response_model=RunDetail)

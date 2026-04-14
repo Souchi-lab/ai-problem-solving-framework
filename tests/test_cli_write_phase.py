@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -184,7 +185,20 @@ def test_write_phase_advances_run_state_after_review_save(tmp_path: Path) -> Non
     stale_state["gate_failures"] = ["old blocker"]
     (run_dir / "run_state.json").write_text(json.dumps(stale_state), encoding="utf-8")
 
-    result = _invoke_write_phase(tmp_path, run_name, ["--stdin"], _meaningful_content(5))
+    review_content = (
+        "# Review\n\n"
+        "## Summary of review\n\n"
+        "Builder must revise the implementation.\n\n"
+        "## Critical Issues\n\n"
+        "- Missing canonical write path verification.\n\n"
+        "## Suggested Improvements\n\n"
+        "- [Critical] Fix the write path.\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Build","human_owned_blocker":false}\n'
+        "```\n"
+    )
+
+    result = _invoke_write_phase(tmp_path, run_name, ["--stdin"], review_content)
 
     assert result.exit_code == 0, result.output
     state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
@@ -194,6 +208,177 @@ def test_write_phase_advances_run_state_after_review_save(tmp_path: Path) -> Non
     assert state["retry_count"] == 0
     assert state["last_error"] == ""
     assert state["gate_failures"] == []
+
+
+def test_write_phase_review_save_writes_canonical_judge_advisory(tmp_path: Path) -> None:
+    _setup_env(tmp_path)
+    run_name = "2099-01-01_test-case_write-review-advisory"
+    run_dir = _create_run(tmp_path, run_name)
+    _fill_file(run_dir, "execution-assignment.md")
+    _fill_file(run_dir, "goal.md")
+    _fill_file(run_dir, "build.md")
+    _write_run_state(run_dir, phase="REVIEW_NEEDED", owner="Critic")
+
+    review_content = (
+        "# Review\n\n"
+        "## Summary of review\n\n"
+        "Return to Builder.\n\n"
+        "## Critical Issues\n\n"
+        "- Builder-facing blocking defect.\n\n"
+        "## Suggested Improvements\n\n"
+        "- [Critical] Fix the blocking defect.\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Build","human_owned_blocker":false}\n'
+        "```\n"
+    )
+
+    result = _invoke_write_phase(tmp_path, run_name, ["--stdin"], review_content)
+
+    assert result.exit_code == 0, result.output
+    advisory = json.loads((run_dir / "judge_advisory.json").read_text(encoding="utf-8"))
+    assert advisory["recommendation"] == "Return to Build"
+    assert advisory["human_owned_blocker"] is False
+    assert advisory["advisory_source"] == "judge_structured"
+    assert advisory["source"] == "write-phase review completion"
+    assert advisory["phase"] == "IMPROVE_NEEDED"
+    assert advisory["freshness_token"]
+
+
+def test_write_phase_review_save_writes_plan_reroute_advisory(tmp_path: Path) -> None:
+    _setup_env(tmp_path)
+    run_name = "2099-01-01_test-case_write-review-advisory-plan"
+    run_dir = _create_run(tmp_path, run_name)
+    _fill_file(run_dir, "execution-assignment.md")
+    _fill_file(run_dir, "goal.md")
+    _fill_file(run_dir, "build.md")
+    _write_run_state(run_dir, phase="REVIEW_NEEDED", owner="Critic")
+
+    review_content = (
+        "# Review\n\n"
+        "## Summary of review\n\n"
+        "Return to Planner.\n\n"
+        "## Critical Issues\n\n"
+        "- Planning boundary is wrong.\n\n"
+        "## Suggested Improvements\n\n"
+        "- [Critical] Rework the plan.\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Plan","human_owned_blocker":false}\n'
+        "```\n"
+    )
+
+    result = _invoke_write_phase(tmp_path, run_name, ["--stdin"], review_content)
+
+    assert result.exit_code == 0, result.output
+    advisory = json.loads((run_dir / "judge_advisory.json").read_text(encoding="utf-8"))
+    assert advisory["recommendation"] == "Return to Plan"
+    assert advisory["human_owned_blocker"] is False
+
+
+def test_write_phase_review_save_requires_structured_advisory_block(tmp_path: Path) -> None:
+    _setup_env(tmp_path)
+    run_name = "2099-01-01_test-case_write-review-advisory-missing"
+    run_dir = _create_run(tmp_path, run_name)
+    _fill_file(run_dir, "execution-assignment.md")
+    _fill_file(run_dir, "goal.md")
+    _fill_file(run_dir, "build.md")
+    _write_run_state(run_dir, phase="REVIEW_NEEDED", owner="Critic")
+
+    review_content = (
+        "# Review\n\n"
+        "## Summary of review\n\n"
+        "Missing structured advisory.\n\n"
+        "## Critical Issues\n\n"
+        "- Still meaningful review content.\n\n"
+        "## Major Issues\n\n"
+        "- Another concrete issue.\n\n"
+        "## Notes\n\n"
+        "Judge still needs a structured recommendation block.\n"
+    )
+
+    result = _invoke_write_phase(tmp_path, run_name, ["--stdin"], review_content)
+
+    assert result.exit_code == 1, result.output
+    assert "apsf-judge-advisory" in result.output
+    assert not (run_dir / "judge_advisory.json").exists()
+
+
+def test_write_phase_review_save_fails_when_duplicate_identical_advisory_blocks_exist(tmp_path: Path) -> None:
+    _setup_env(tmp_path)
+    run_name = "2099-01-01_test-case_write-review-advisory-duplicate-identical"
+    run_dir = _create_run(tmp_path, run_name)
+    _fill_file(run_dir, "execution-assignment.md")
+    _fill_file(run_dir, "goal.md")
+    _fill_file(run_dir, "build.md")
+    _write_run_state(run_dir, phase="REVIEW_NEEDED", owner="Critic")
+
+    review_content = (
+        "# Review\n\n"
+        "## Summary of review\n\n"
+        "Duplicate advisory blocks.\n\n"
+        "## Critical Issues\n\n"
+        "- One clear issue.\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Build","human_owned_blocker":false}\n'
+        "```\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Build","human_owned_blocker":false}\n'
+        "```\n"
+    )
+
+    result = _invoke_write_phase(tmp_path, run_name, ["--stdin"], review_content)
+
+    assert result.exit_code == 1, result.output
+    assert "multiple blocks are not allowed" in result.output
+    assert not (run_dir / "judge_advisory.json").exists()
+
+
+def test_write_phase_review_save_fails_when_duplicate_conflicting_advisory_blocks_exist(tmp_path: Path) -> None:
+    _setup_env(tmp_path)
+    run_name = "2099-01-01_test-case_write-review-advisory-duplicate-conflict"
+    run_dir = _create_run(tmp_path, run_name)
+    _fill_file(run_dir, "execution-assignment.md")
+    _fill_file(run_dir, "goal.md")
+    _fill_file(run_dir, "build.md")
+    _write_run_state(run_dir, phase="REVIEW_NEEDED", owner="Critic")
+
+    review_content = (
+        "# Review\n\n"
+        "## Summary of review\n\n"
+        "Conflicting advisory blocks.\n\n"
+        "## Critical Issues\n\n"
+        "- One clear issue.\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Build","human_owned_blocker":false}\n'
+        "```\n\n"
+        "```apsf-judge-advisory\n"
+        '{"recommendation":"Return to Plan","human_owned_blocker":true}\n'
+        "```\n"
+    )
+
+    result = _invoke_write_phase(tmp_path, run_name, ["--stdin"], review_content)
+
+    assert result.exit_code == 1, result.output
+    assert "multiple blocks are not allowed" in result.output
+    assert not (run_dir / "judge_advisory.json").exists()
+
+
+def test_write_phase_fails_closed_when_state_sync_fails(tmp_path: Path) -> None:
+    _setup_env(tmp_path)
+    run_name = "2099-01-01_test-case_write-sync-failure"
+    run_dir = _create_run(tmp_path, run_name)
+    _fill_file(run_dir, "execution-assignment.md")
+    _fill_file(run_dir, "goal.md")
+
+    with patch(
+        "apsf.core.state.transition_service.TransitionService.transition",
+        side_effect=RuntimeError("state sync failed"),
+    ):
+        result = _invoke_write_phase(tmp_path, run_name, ["--stdin"], _meaningful_content(5))
+
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, RuntimeError)
+    assert "state sync failed" in str(result.exception)
+    assert (run_dir / "plan.md").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -253,6 +253,46 @@ class TestActAutoGeneration:
         assert state["last_error"] == ""
         assert state["active_handoff_id"] == ""
 
+    def test_act_auto_advance_from_completed_human_phase_uses_canonical_transition(
+        self, tmp_path: Path
+    ) -> None:
+        _setup_env(tmp_path)
+        run_dir = _create_run(tmp_path, self.RUN)
+        _fill_file(run_dir, "execution-assignment.md")
+        _fill_file(run_dir, "goal.md")
+        (run_dir / "run_state.json").write_text(
+            json.dumps(
+                {
+                    "run_id": self.RUN,
+                    "current_phase": "GOAL_NEEDED",
+                    "phase_status": "failed",
+                    "current_owner": "Human",
+                    "retry_count": 5,
+                    "last_error": "stale goal blocker",
+                    "active_handoff_id": "handoff-654",
+                    "gate_failures": ["old gate"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "apsf.legacy.orchestration.act_service.ActService._get_provider",
+            return_value=_MockProvider(),
+        ):
+            result = _invoke_act(tmp_path, self.RUN)
+
+        assert result.exit_code == 0, result.output
+        assert (run_dir / "plan.md").exists()
+        state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+        assert state["current_phase"] == "BUILD_NEEDED"
+        assert state["phase_status"] == "pending"
+        assert state["current_owner"] == "Builder"
+        assert state["retry_count"] == 0
+        assert state["last_error"] == ""
+        assert state["active_handoff_id"] == ""
+        assert state["gate_failures"] == []
+
     def test_review_auto_generated(self, tmp_path: Path) -> None:
         """build.md 充填済み、review.md 未充填 → review.md を自動生成する。"""
         _setup_env(tmp_path)
@@ -406,6 +446,35 @@ class TestActPrintPrompt:
         result = _invoke_act(tmp_path, self.RUN, ["--print-prompt"])
 
         assert result.exit_code == 0, result.output
+
+    def test_print_prompt_ignores_existing_placeholder_target_file(self, tmp_path: Path) -> None:
+        _setup_env(tmp_path)
+        run_dir = _create_run(tmp_path, self.RUN)
+        _fill_file(run_dir, "execution-assignment.md")
+        _fill_file(run_dir, "goal.md")
+        _fill_file(run_dir, "plan.md")
+        _fill_file(run_dir, "build.md")
+        (run_dir / "review.md").write_text("# Review\n\nPending critic work.\n", encoding="utf-8")
+        (run_dir / "run_state.json").write_text(
+            json.dumps(
+                {
+                    "run_id": self.RUN,
+                    "current_phase": "REVIEW_NEEDED",
+                    "phase_status": "pending",
+                    "current_owner": "Critic",
+                    "retry_count": 0,
+                    "last_error": "",
+                    "active_handoff_id": "",
+                    "gate_failures": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = _invoke_act(tmp_path, self.RUN, ["--print-prompt"])
+
+        assert result.exit_code == 0, result.output
+        assert "Review the Build output against the Goal's success criteria." in result.output
 
 
 class TestActClaudeCliExecutor:
