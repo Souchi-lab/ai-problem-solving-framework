@@ -196,9 +196,29 @@ def derive_specialist_relative_path(role: str, code: str, slug: str) -> str:
     return f"{directory}/{normalized_slug}.md"
 
 
+_CONFIRMED_SECTION_HEADER = "## Confirmed Specialist"
+
+
 def extract_primary_specialist_code(text: str, prefix: str) -> str:
+    """Extract specialist code, preferring ## Confirmed Specialist section over freeform notes."""
     marker = f"{prefix}-TYPE"
-    for line in (text or "").splitlines():
+    lines = (text or "").splitlines()
+
+    # First pass: scan only inside ## Confirmed Specialist section
+    in_confirmed = False
+    for line in lines:
+        if line.strip() == _CONFIRMED_SECTION_HEADER:
+            in_confirmed = True
+            continue
+        if in_confirmed and line.startswith("## "):
+            break
+        if in_confirmed and marker in line.upper():
+            normalized = normalize_specialist_code(line)
+            if normalized.startswith(f"{prefix}-"):
+                return normalized
+
+    # Fallback: scan entire document
+    for line in lines:
         if marker not in line.upper():
             continue
         normalized = normalize_specialist_code(line)
