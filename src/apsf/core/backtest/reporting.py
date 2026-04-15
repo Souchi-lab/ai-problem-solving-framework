@@ -103,6 +103,7 @@ def run_backtest_suite(
         minimum_overlap_years=config.minimum_overlap_years,
         minimum_trade_count=config.minimum_trade_count,
         warm_up_trading_days=config.warm_up_trading_days,
+        use_v02_rules=config.use_v02_rules,
     )
     stress_result = run_backtest(price_history_by_symbol, config=stress_config)
     decision = evaluate_adoption(

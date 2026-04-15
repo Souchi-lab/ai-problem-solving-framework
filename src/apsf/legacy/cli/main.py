@@ -1193,6 +1193,17 @@ def next_cmd(
         info = advisory_info
         phase_source = "[advisory]"
 
+    # ── Repair missing transition_outcome.json (self-healing) ────────────────
+    # If the run is at BUILD_NEEDED but transition_outcome.json was never written
+    # (e.g. the phase was set manually or via a path that bypassed TransitionService),
+    # repair the gate record now so build scripts can proceed.
+    if info.phase == Phase.BUILD_NEEDED:
+        try:
+            from ...core.state.transition_service import TransitionService as _TS
+            _TS().ensure_build_gate_record(run_dir, actor="system")
+        except Exception:
+            pass  # Non-fatal: build gate will still report UNRECORDED if repair fails
+
     if phase_only:
         typer.echo(info.phase.value)
         raise typer.Exit(0)

@@ -306,6 +306,37 @@ class TransitionService:
             ),
         )
 
+    def ensure_build_gate_record(self, run_dir: Path, actor: str) -> bool:
+        """
+        Repair a missing transition_outcome.json when the run is already at BUILD_NEEDED.
+
+        This is a recovery-only operation. It does NOT modify run_state.json.
+        It only writes transition_outcome.json if:
+          - the current phase is BUILD_NEEDED, AND
+          - transition_outcome.json does not already exist.
+
+        Returns True if a new record was written, False otherwise.
+        """
+        from ..ownership.record import TransitionOutcomeMissing, get_transition_outcome
+
+        state = RunStateRepository(run_dir).load()
+        if state is None or state.current_phase != "BUILD_NEEDED":
+            return False
+
+        try:
+            get_transition_outcome(run_dir)
+            return False  # Already exists
+        except TransitionOutcomeMissing:
+            pass
+
+        self._sync_transition_outcome(
+            run_dir=run_dir,
+            from_phase="",
+            to_phase="BUILD_NEEDED",
+            actor=actor,
+        )
+        return True
+
     def set_status(
         self,
         run_dir: Path,

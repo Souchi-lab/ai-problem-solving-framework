@@ -70,3 +70,9 @@
 ## Notes
 
 <!-- スコープ外の気づき・将来的な検討事項（参考情報として分離） -->
+
+---
+
+```apsf-judge-advisory
+{"recommendation": "Accept", "human_owned_blocker": false}
+```

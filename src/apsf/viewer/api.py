@@ -4998,6 +4998,32 @@ async def write_judge_advisory(taxonomy: str, run_name: str, request: WriteJudge
     return JudgeAdvisoryResponse(**payload)
 
 
+def _read_auto_loop_stop_info(run_dir: Path) -> dict:
+    """Read last stop_reason and exit code from auto_loop.log tail."""
+    log_path = run_dir / _AUTO_LOOP_LOG_FILE
+    if not log_path.exists():
+        return {}
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        tail = lines[-30:]
+        stop_reason: str | None = None
+        last_exit: int | None = None
+        for line in reversed(tail):
+            if stop_reason is None:
+                m = re.search(r"stop_reason=(\S+)", line)
+                if m:
+                    stop_reason = m.group(1)
+            if last_exit is None:
+                m = re.search(r"\bexit=(-?\d+)", line)
+                if m:
+                    last_exit = int(m.group(1))
+            if stop_reason is not None and last_exit is not None:
+                break
+        return {k: v for k, v in {"stop_reason": stop_reason, "last_exit": last_exit}.items() if v is not None}
+    except Exception:
+        return {}
+
+
 @app.get("/api/runs/{taxonomy}/{run_name:path}/auto-loop-status")
 async def auto_loop_status(taxonomy: str, run_name: str):
     """Check whether auto-loop is running for this run."""
@@ -5015,7 +5041,11 @@ async def auto_loop_status(taxonomy: str, run_name: str):
     else:
         _clear_auto_loop_markers(run_dir)
         stop_pending = False
-    return {"running": running, "stop_pending": stop_pending}
+
+    result: dict = {"running": running, "stop_pending": stop_pending}
+    if not running:
+        result.update(_read_auto_loop_stop_info(run_dir))
+    return result
 
 
 @app.post("/api/runs/{taxonomy}/{run_name:path}/request-stop")

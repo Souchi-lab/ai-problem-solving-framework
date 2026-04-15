@@ -32,6 +32,8 @@ class SimulationConfig:
     minimum_overlap_years: float = 3.0
     minimum_trade_count: int = 30
     warm_up_trading_days: int = 60
+    # v0.2 strategy rule switches (defaults preserve v0.1 behaviour)
+    use_v02_rules: bool = False
 
 
 @dataclass(frozen=True)
@@ -249,11 +251,13 @@ def run_backtest(
             exposure_days += 1
             if index > 0:
                 indicator = indicators[position.symbol][index]
-                if indicator.ll10_prev is not None and indicator.atr14 is not None:
+                ll_prev = indicator.ll15_prev if config.use_v02_rules else indicator.ll10_prev
+                ll_breach_reason = "ll15_breach" if config.use_v02_rules else "ll10_breach"
+                if ll_prev is not None and indicator.atr14 is not None:
                     raised_stop = max(
                         position.stop_price,
                         _floor_to_tick(bar.close - (2.0 * indicator.atr14), _tick_size(bar.close)),
-                        indicator.ll10_prev,
+                        ll_prev,
                     )
                     position = Position(
                         symbol=position.symbol,
@@ -263,8 +267,8 @@ def run_backtest(
                         stop_price=raised_stop,
                         bars_held=position.bars_held + 1,
                     )
-                    if bar.close < indicator.ll10_prev:
-                        queued_exit_reason = "ll10_breach"
+                    if bar.close < ll_prev:
+                        queued_exit_reason = ll_breach_reason
                     elif indicator.sma20 is not None and bar.close < indicator.sma20:
                         queued_exit_reason = "sma20_breach"
 
@@ -358,6 +362,8 @@ class _IndicatorRow:
     ll10_prev: float | None = None
     avg_volume20: float | None = None
     atr14: float | None = None
+    hh15_prev: float | None = None
+    ll15_prev: float | None = None
 
 
 def _compute_indicators(bars: Sequence[Bar]) -> list[_IndicatorRow]:
@@ -375,28 +381,50 @@ def _compute_indicators(bars: Sequence[Bar]) -> list[_IndicatorRow]:
                 ll10_prev=min(b.low for b in bars[index - 10 : index]) if index >= 10 else None,
                 avg_volume20=_mean([b.volume for b in bars[index - 19 : index + 1]]) if index >= 19 else None,
                 atr14=_mean(true_ranges[index - 13 : index + 1]) if index >= 13 else None,
+                hh15_prev=max(b.high for b in bars[index - 15 : index]) if index >= 15 else None,
+                ll15_prev=min(b.low for b in bars[index - 15 : index]) if index >= 15 else None,
             )
         )
     return rows
 
 
 def _entry_signal(bar: Bar, indicator: _IndicatorRow, config: SimulationConfig) -> bool:
-    if (
-        indicator.hh20_prev is None
-        or indicator.sma20 is None
-        or indicator.sma60 is None
-        or indicator.avg_volume20 is None
-        or indicator.atr14 is None
-    ):
-        return False
-    if bar.close <= indicator.hh20_prev:
-        return False
-    if bar.close <= indicator.sma20:
-        return False
-    if indicator.sma20 <= indicator.sma60:
-        return False
-    if bar.volume < 1.2 * indicator.avg_volume20:
-        return False
+    if config.use_v02_rules:
+        # v0.2: HH15, Volume >= AvgVolume20 (no 1.2x multiplier)
+        if (
+            indicator.hh15_prev is None
+            or indicator.sma20 is None
+            or indicator.sma60 is None
+            or indicator.avg_volume20 is None
+            or indicator.atr14 is None
+        ):
+            return False
+        if bar.close <= indicator.hh15_prev:
+            return False
+        if bar.close <= indicator.sma20:
+            return False
+        if indicator.sma20 <= indicator.sma60:
+            return False
+        if bar.volume < indicator.avg_volume20:
+            return False
+    else:
+        # v0.1: HH20, Volume >= 1.2 * AvgVolume20
+        if (
+            indicator.hh20_prev is None
+            or indicator.sma20 is None
+            or indicator.sma60 is None
+            or indicator.avg_volume20 is None
+            or indicator.atr14 is None
+        ):
+            return False
+        if bar.close <= indicator.hh20_prev:
+            return False
+        if bar.close <= indicator.sma20:
+            return False
+        if indicator.sma20 <= indicator.sma60:
+            return False
+        if bar.volume < 1.2 * indicator.avg_volume20:
+            return False
     return (bar.close - _initial_stop(bar.close, indicator.atr14)) <= config.per_trade_risk_cap
 
 

@@ -3,7 +3,7 @@
     "act": "wrapper"
   },
   "wrapper_backends": {
-    "act": "codex-cli",
+    "act": "claude-cli",
     "build": "claude-cli"
   },
   "build_max_turns": 30

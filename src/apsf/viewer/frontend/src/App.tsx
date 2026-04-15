@@ -271,7 +271,53 @@ interface RunningExecutionState {
 interface AutoLoopStatus {
   running: boolean
   stop_pending: boolean
+  stop_reason?: string
+  last_exit?: number
 }
+
+interface RallyMessage {
+  artifact: string
+  speaker: string
+  title: string
+  content: string  // raw markdown; empty string when artifact does not exist
+  exists: boolean
+}
+
+function stripMarkdownForSummary(markdown: string) {
+  return markdown
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\|.*\|$/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '• ')
+    .replace(/^\s*\d+\.\s+/gm, '• ')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\r/g, '')
+}
+
+// Extract first meaningful line from raw markdown for stop-summary display
+function extractSummaryLine(markdown: string, maxLen = 130): string {
+  return (
+    stripMarkdownForSummary(markdown)
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && l !== '---' && !/^•\s*\[[ xX]\]/.test(l) && l.length > 10)
+      .at(0)
+      ?.slice(0, maxLen) ?? ''
+  )
+}
+
+// Parse P/B/C specialist codes from execution-assignment.md text
+function parseSpecialistCodes(content: string): { planner: string; builder: string; critic: string } {
+  const extract = (prefix: string) => {
+    const m = content.match(new RegExp(`${prefix}-TYPE:\\s*([A-Z][A-Z0-9-]+)`, 'i'))
+    return m ? m[1].trim() : ''
+  }
+  return { planner: extract('P'), builder: extract('B'), critic: extract('C') }
+}
+
 
 // ── Agent OS interfaces ─────────────────────────────────────────────────────
 
@@ -284,6 +330,7 @@ interface RunStateInfo {
   last_error: string
   active_handoff_id: string
   gate_failures: string[]
+  phase_entered_at?: string
 }
 
 interface ArtifactEntryInfo {
@@ -1255,6 +1302,323 @@ function SpecialistSelectionModal({
   )
 }
 
+const BUILD_BACKEND_OPTIONS = [
+  { label: 'Claude', script: 'apsf-claude-build.ps1' },
+  { label: 'Codex', script: 'apsf-codex-build.ps1' },
+] as const
+
+function AutoLoopLaunchModal({
+  taxonomy,
+  runName,
+  phase,
+  assignment,
+  specialist,
+  starting,
+  onClose,
+  onChangeAssignment,
+  onStart,
+}: {
+  taxonomy: string
+  runName: string
+  phase: string
+  assignment: AssignmentSummary | null
+  specialist: SpecialistVisibility | null
+  starting: boolean
+  onClose: () => void
+  onChangeAssignment: () => void
+  onStart: (buildScript: string) => Promise<void>
+}) {
+  const [buildScript, setBuildScript] = useState<string>(BUILD_BACKEND_OPTIONS[0].script)
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/60">
+        <div className="flex items-start justify-between gap-4 border-b border-zinc-800 px-5 py-4">
+          <div>
+            <div className="text-lg font-bold text-zinc-100">Start Auto-Loop</div>
+            <div className="mt-1 text-sm text-zinc-400">
+              Confirm the current assignment before launching the loop. If the specialist or role is wrong, change it first.
+            </div>
+            <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+              {taxonomy} / {runName}
+            </div>
+          </div>
+          <button onClick={onClose} className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:border-zinc-500 hover:text-white">
+            Close
+          </button>
+        </div>
+
+        <div className="space-y-4 p-5">
+          <div className="rounded border border-cyan-500/20 bg-cyan-500/5 p-3 text-xs text-cyan-100">
+            Current phase: <span className="font-mono">{phase || 'unknown'}</span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded border border-zinc-800 bg-black/20 p-3 text-xs">
+              <div className="text-[10px] uppercase tracking-wide text-zinc-500">Agent</div>
+              <div className="mt-1 font-semibold text-zinc-100">{assignment?.role || 'unset'}</div>
+              <div className="mt-1 text-zinc-400">{assignment?.execution.execution_type || 'unset'}</div>
+            </div>
+            <div className="rounded border border-zinc-800 bg-black/20 p-3 text-xs">
+              <div className="text-[10px] uppercase tracking-wide text-zinc-500">Provider / Model</div>
+              <div className="mt-1 text-zinc-200">{assignment?.model.provider || 'unset'}</div>
+              <div className="font-mono text-[10px] text-zinc-400">{assignment?.model.model || 'unset'}</div>
+            </div>
+            <div className={`rounded border bg-black/20 p-3 text-xs ${specialist?.has_gap ? 'border-red-500/30' : 'border-zinc-800'}`}>
+              <div className="text-[10px] uppercase tracking-wide text-zinc-500">Specialist</div>
+              <div className="mt-1 font-semibold text-zinc-100">{specialist?.specialist_code || '(generic)'}</div>
+              <div className={specialist?.has_gap ? 'mt-1 text-red-300' : 'mt-1 text-zinc-400'}>
+                {specialist?.has_gap ? 'Gap detected' : specialist?.mode || 'not_applicable'}
+              </div>
+            </div>
+          </div>
+
+          {/* Build Backend selector */}
+          <div className="rounded border border-zinc-800 bg-black/20 p-3">
+            <div className="mb-2 text-[10px] uppercase tracking-wide text-zinc-500">Build Backend</div>
+            <div className="flex gap-2">
+              {BUILD_BACKEND_OPTIONS.map((opt) => (
+                <button
+                  key={opt.script}
+                  type="button"
+                  onClick={() => setBuildScript(opt.script)}
+                  className={`rounded border px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+                    buildScript === opt.script
+                      ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-100'
+                      : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-1.5 font-mono text-[9px] text-zinc-600">{buildScript}</div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-3 border-t border-zinc-800 px-5 py-4">
+          <button
+            type="button"
+            onClick={onChangeAssignment}
+            disabled={starting}
+            className="rounded border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-500/20 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+          >
+            Change Assignment
+          </button>
+          <button
+            type="button"
+            onClick={() => void onStart(buildScript)}
+            disabled={starting}
+            className="rounded border border-cyan-500/30 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-50 hover:bg-cyan-500/20 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+          >
+            {starting ? 'Starting...' : 'Start Auto-Loop'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RallyConversationModal({
+  runName,
+  messages,
+  loading,
+  onClose,
+  autoLoopRunning,
+  stopPending,
+  currentOwner,
+  elapsedDisplay,
+  specialistCodes,
+}: {
+  runName: string
+  messages: RallyMessage[]
+  loading: boolean
+  onClose: () => void
+  autoLoopRunning: boolean
+  stopPending: boolean
+  currentOwner: string
+  elapsedDisplay: string | null
+  specialistCodes: { planner: string; builder: string; critic: string }
+}) {
+  // Determine the active artifact from currentOwner so the running indicator
+  // tracks the CURRENT PHASE, not merely the first missing artifact.
+  // When a role reruns (e.g. build rerun creates build_rerun_*.md that is not
+  // in the list), we fall back to the last artifact authored by that role.
+  const activeArtifact = (() => {
+    if (!autoLoopRunning) return null
+    // Map currentOwner → speaker name used in messages
+    const ownerSpeaker =
+      currentOwner === 'Planner' ? 'Planner'
+      : currentOwner === 'Builder' ? 'Builder'
+      : currentOwner === 'Critic' ? 'Critic'
+      : null
+    if (ownerSpeaker) {
+      // Prefer: first missing artifact for this owner
+      const missing = messages.find((m) => m.speaker === ownerSpeaker && !m.exists)
+      if (missing) return missing.artifact
+      // Rerun fallback: all owner artifacts exist → highlight the last one
+      const ownerMsgs = messages.filter((m) => m.speaker === ownerSpeaker)
+      if (ownerMsgs.length > 0) return ownerMsgs[ownerMsgs.length - 1].artifact
+    }
+    // Final fallback
+    return messages.find((m) => !m.exists)?.artifact ?? null
+  })()
+
+  // Specialist code for a given artifact name
+  const codeForArtifact = (artifact: string) => {
+    if (artifact === 'plan.md') return specialistCodes.planner
+    if (artifact === 'build.md') return specialistCodes.builder
+    if (artifact === 'review.md') return specialistCodes.critic
+    return ''
+  }
+
+  // Current worker specialist code (always derived from currentOwner from run_state)
+  const currentWorkerCode =
+    currentOwner === 'Planner' ? specialistCodes.planner
+    : currentOwner === 'Builder' ? specialistCodes.builder
+    : currentOwner === 'Critic' ? specialistCodes.critic
+    : ''
+
+  // Session summary: first meaningful line from each existing artifact
+  const sessionSummary = !autoLoopRunning
+    ? messages
+        .filter((m) => m.exists)
+        .map((m) => ({ artifact: m.artifact, line: extractSummaryLine(m.content) }))
+        .filter((s) => s.line !== '')
+    : []
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="flex max-h-[88vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/60" onClick={(e) => e.stopPropagation()}>
+
+        {/* ── Header ─────────────────────────────────────────────────── */}
+        <div className="flex items-start justify-between gap-3 border-b border-zinc-800 px-5 py-4">
+          <div className="min-w-0 flex-1">
+            {/* Title + running/stopped badge */}
+            <div className="flex items-center gap-2.5">
+              <span className="text-base font-bold text-zinc-100">Rally</span>
+              {autoLoopRunning ? (
+                <span className="flex items-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+                  {stopPending ? 'Stop Pending' : 'Running'}
+                </span>
+              ) : (
+                <span className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                  Stopped
+                </span>
+              )}
+            </div>
+            {/* Run name */}
+            <div className="mt-1 truncate font-mono text-[10px] text-zinc-500">{runName}</div>
+            {/* Worker + specialist code + elapsed */}
+            {(currentOwner || elapsedDisplay) && (
+              <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px]">
+                {currentOwner && (
+                  <span className="flex items-center gap-1.5 text-zinc-400">
+                    <span className="text-zinc-600">Worker</span>
+                    <span className="font-semibold text-zinc-200">{currentOwner}</span>
+                    {currentWorkerCode && (
+                      <span className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 font-mono text-zinc-300">{currentWorkerCode}</span>
+                    )}
+                  </span>
+                )}
+                {elapsedDisplay && (
+                  <span className="flex items-center gap-1 text-zinc-400">
+                    <span className="text-zinc-600">Elapsed</span>
+                    <span className="font-mono font-semibold text-zinc-200">{elapsedDisplay}</span>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+          <button onClick={onClose} className="flex-shrink-0 rounded border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:border-zinc-500 hover:text-white">
+            Close
+          </button>
+        </div>
+
+        {/* ── Artifact timeline ───────────────────────────────────────── */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {loading ? (
+            <div className="rounded border border-zinc-800 bg-black/20 p-4 text-sm text-zinc-400">Loading rally...</div>
+          ) : messages.length === 0 ? (
+            <div className="rounded border border-zinc-800 bg-black/20 p-4 text-sm text-zinc-400">No artifacts yet.</div>
+          ) : (
+            <>
+              <div className="space-y-0.5">
+                {messages.map((msg, idx) => {
+                  const isActive = msg.artifact === activeArtifact
+                  const code = codeForArtifact(msg.artifact)
+                  const speakerInitial =
+                    msg.speaker === 'Builder' ? 'B'
+                    : msg.speaker === 'Critic' ? 'C'
+                    : msg.speaker === 'Judge' ? 'J'
+                    : 'R'
+                  const badgeClass =
+                    msg.speaker === 'Builder'
+                      ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200'
+                      : msg.speaker === 'Critic'
+                        ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                        : msg.speaker === 'Judge'
+                          ? 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-200'
+                          : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                  return (
+                    <div
+                      key={`${msg.artifact}-${idx}`}
+                      className={`flex items-center gap-2.5 rounded px-2.5 py-2 text-[11px] transition-colors ${
+                        isActive ? 'bg-cyan-500/5 ring-1 ring-inset ring-cyan-500/20' : !msg.exists ? 'opacity-35' : ''
+                      }`}
+                    >
+                      {/* Speaker badge */}
+                      <span className={`flex-shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-bold ${badgeClass}`}>{speakerInitial}</span>
+                      {/* Artifact name */}
+                      <span className="flex-1 font-mono text-zinc-300">{msg.artifact}</span>
+                      {/* Specialist code */}
+                      {code && (
+                        <span className="flex-shrink-0 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500">{code}</span>
+                      )}
+                      {/* Status indicator */}
+                      {isActive ? (
+                        <span className="flex flex-shrink-0 items-end gap-[3px] pb-0.5">
+                          {[0, 150, 300].map((delay) => (
+                            <span
+                              key={delay}
+                              className="block h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-400"
+                              style={{ animationDelay: `${delay}ms` }}
+                            />
+                          ))}
+                        </span>
+                      ) : msg.exists ? (
+                        <span className="flex-shrink-0 text-[10px] text-emerald-400">✓</span>
+                      ) : (
+                        <span className="flex-shrink-0 text-[10px] text-zinc-700">○</span>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* ── Session summary (shown when stopped) ──────────────── */}
+              {!autoLoopRunning && sessionSummary.length > 0 && (
+                <div className="mt-5 rounded border border-zinc-800 bg-black/30 px-4 py-3">
+                  <div className="mb-2.5 text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-500">Session Summary</div>
+                  <div className="space-y-2">
+                    {sessionSummary.map(({ artifact, line }) => (
+                      <div key={artifact} className="flex gap-2 text-[11px]">
+                        <span className="flex-shrink-0 font-mono text-zinc-500">{artifact}</span>
+                        <span className="text-zinc-600">—</span>
+                        <span className="text-zinc-300">{line}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function CreateSpecialistModal({
   taxonomy,
   runName,
@@ -2092,6 +2456,11 @@ export default function App() {
   const [autoLoopStatus, setAutoLoopStatus] = useState<AutoLoopStatus | null>(null)
   const [autoLoopLoading, setAutoLoopLoading] = useState(false)
   const [autoLoopMutating, setAutoLoopMutating] = useState<'start' | 'stop' | 'cancel' | null>(null)
+  const [autoLoopLaunchModalOpen, setAutoLoopLaunchModalOpen] = useState(false)
+  const [rallyModalOpen, setRallyModalOpen] = useState(false)
+  const [rallyMessages, setRallyMessages] = useState<RallyMessage[]>([])
+  const [rallyLoading, setRallyLoading] = useState(false)
+  const [rallySpecialistCodes, setRallySpecialistCodes] = useState<{ planner: string; builder: string; critic: string }>({ planner: '', builder: '', critic: '' })
   const [isLoadingRuns, setIsLoadingRuns] = useState(true)
   const [runsError, setRunsError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -2248,6 +2617,9 @@ export default function App() {
   }
   }
 
+  const prevAutoLoopRunningRef = useRef<boolean | null>(null)
+  const [loopStopToast, setLoopStopToast] = useState<{ stopReason: string | null; lastExit: number | null } | null>(null)
+
   const loadAutoLoopStatus = useCallback(async (taxonomy: string, runName: string) => {
     setAutoLoopLoading(true)
     try {
@@ -2256,10 +2628,21 @@ export default function App() {
         throw new Error(`Failed to load auto-loop status (${resp.status})`)
       }
       const data = await resp.json()
-      setAutoLoopStatus({
+      const next: AutoLoopStatus = {
         running: Boolean(data.running),
         stop_pending: Boolean(data.stop_pending),
-      })
+        stop_reason: typeof data.stop_reason === 'string' ? data.stop_reason : undefined,
+        last_exit: typeof data.last_exit === 'number' ? data.last_exit : undefined,
+      }
+      // Detect running → stopped transition and fire toast
+      if (prevAutoLoopRunningRef.current === true && !next.running) {
+        setLoopStopToast({
+          stopReason: next.stop_reason ?? null,
+          lastExit: next.last_exit ?? null,
+        })
+      }
+      prevAutoLoopRunningRef.current = next.running
+      setAutoLoopStatus(next)
     } catch {
       setAutoLoopStatus(null)
     } finally {
@@ -2267,13 +2650,13 @@ export default function App() {
     }
   }, [])
 
-  const startAutoLoop = useCallback(async (taxonomy: string, runName: string) => {
+  const startAutoLoop = useCallback(async (taxonomy: string, runName: string, buildScript?: string) => {
     setAutoLoopMutating('start')
     try {
       const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/start-auto-loop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify(buildScript ? { build_script: buildScript } : {}),
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) {
@@ -2420,6 +2803,72 @@ export default function App() {
     setSpecialistModalOpen(true)
   }
 
+  const openAutoLoopLaunchModal = () => {
+    setAutoLoopLaunchModalOpen(true)
+  }
+
+  const openRallyConversation = useCallback(async () => {
+    if (!selectedTaxonomy || !targetRun) return
+    const availableArtifacts = (targetDetail?.artifacts ?? detail?.artifacts ?? []).filter((artifact) => artifact.exists)
+    const orderedArtifacts = [
+      { name: 'goal.md', speaker: 'Result', title: 'Goal' },
+      { name: 'plan.md', speaker: 'Judge', title: 'Plan' },
+      { name: 'build.md', speaker: 'Builder', title: 'Build Report' },
+      { name: 'build_review.md', speaker: 'Judge', title: 'Judge Feedback' },
+      { name: 'review.md', speaker: 'Critic', title: 'Critic Comment' },
+      { name: 'review_review.md', speaker: 'Judge', title: 'Judge Feedback' },
+      { name: 'improve.md', speaker: 'Judge', title: 'Judge Decision' },
+      { name: 'improve_review.md', speaker: 'Judge', title: 'Improve Feedback' },
+      { name: 'result.md', speaker: 'Result', title: 'Closeout' },
+    ]
+
+    setRallyLoading(true)
+    setRallyModalOpen(true)
+    try {
+      // Fetch specialist codes from execution-assignment.md in parallel
+      const assignmentFetch = fetch(
+        `${API_BASE}/runs/${selectedTaxonomy}/${encodeURIComponent(targetRun)}/artifacts/execution-assignment.md`
+      )
+        .then((r) => r.json())
+        .catch(() => ({}))
+
+      const [loaded, assignmentData] = await Promise.all([
+        Promise.all(
+          orderedArtifacts.map(async (item) => {
+            const exists = availableArtifacts.some((artifact) => artifact.name === item.name)
+            if (!exists) {
+              return { artifact: item.name, speaker: item.speaker, title: item.title, content: '', exists: false } as RallyMessage
+            }
+            const resp = await fetch(`${API_BASE}/runs/${selectedTaxonomy}/${encodeURIComponent(targetRun)}/artifacts/${item.name}`)
+            const data = await resp.json().catch(() => ({}))
+            const raw = typeof data.content === 'string' ? data.content : ''
+            return { artifact: item.name, speaker: item.speaker, title: item.title, content: raw, exists: raw.trim() !== '' } as RallyMessage
+          })
+        ),
+        assignmentFetch,
+      ])
+
+      // Parse specialist codes
+      const assignmentContent = typeof assignmentData.content === 'string' ? assignmentData.content : ''
+      setRallySpecialistCodes(parseSpecialistCodes(assignmentContent))
+
+      // Show existing artifacts + first pending artifact only
+      const lastWrittenIndex = loaded.map((item) => item.exists).lastIndexOf(true)
+      const firstPendingAfterWritten =
+        lastWrittenIndex >= 0
+          ? loaded.findIndex((item, index) => index > lastWrittenIndex && !item.exists)
+          : loaded.findIndex((item) => !item.exists)
+      const filtered = loaded.filter((item, index) => item.exists || index === firstPendingAfterWritten)
+      setRallyMessages(filtered)
+    } catch (error) {
+      setRallyMessages([
+        { artifact: 'system', speaker: 'Result', title: 'Load Error', content: error instanceof Error ? error.message : 'Failed to load rally.', exists: false },
+      ])
+    } finally {
+      setRallyLoading(false)
+    }
+  }, [detail?.artifacts, selectedTaxonomy, targetDetail?.artifacts, targetRun])
+
   const makeRunKey = (taxonomy: string, runName: string) => `${taxonomy}:${runName}`
   const isRunExecuting = (taxonomy: string, runName: string) => executingRuns[makeRunKey(taxonomy, runName)] !== undefined
   const executingStateForRun = (taxonomy: string, runName: string) => executingRuns[makeRunKey(taxonomy, runName)] ?? null
@@ -2439,10 +2888,10 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (Object.keys(executingRuns).length === 0) return
+    if (Object.keys(executingRuns).length === 0 && !targetRun) return
     const timer = window.setInterval(() => setExecutionNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [executingRuns])
+  }, [executingRuns, targetRun])
 
   useEffect(() => {
     setSelectedRecoveryCheckpointId(null)
@@ -2457,6 +2906,15 @@ export default function App() {
     void loadSpecialistCandidates(selectedTaxonomy, targetRun, specialistPhaseOverride)
     void loadAutoLoopStatus(selectedTaxonomy, targetRun)
   }, [activeDetailPhase, loadAutoLoopStatus, refreshAgentOS, selectedTaxonomy, targetRun, specialistPhaseOverride])
+
+  // Poll auto-loop status every 5 s while the loop is running
+  useEffect(() => {
+    if (!selectedTaxonomy || !targetRun || !autoLoopStatus?.running) return
+    const timer = window.setInterval(() => {
+      void loadAutoLoopStatus(selectedTaxonomy, targetRun)
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [autoLoopStatus?.running, loadAutoLoopStatus, selectedTaxonomy, targetRun])
 
   // Atomic: fetch parent detail + history in parallel, update all state together
   const fetchDetail = async (taxonomy: string, runName: string) => {
@@ -3171,6 +3629,12 @@ export default function App() {
   const activeDecisionReason = activeDetail?.decision_reason ?? ''
   const activeAssignment = activeDetail?.assignment_summary ?? null
   const activeSpecialist = activeDetail?.specialist_visibility ?? null
+  const activeOwner = agentOSData?.run_state?.current_owner ?? activeNextRole ?? ''
+  const activePhaseStatus = agentOSData?.run_state?.phase_status ?? ''
+  const ownerWorkingNow = activePhaseStatus === 'in_progress'
+  const phaseEnteredAtMs = agentOSData?.run_state?.phase_entered_at ? Date.parse(agentOSData.run_state.phase_entered_at) : NaN
+  const activePhaseElapsed = Number.isFinite(phaseEnteredAtMs) ? formatElapsedMs(Math.max(0, executionNow - phaseEnteredAtMs)) : null
+  const ownerStatusLabel = ownerWorkingNow ? '実行中' : activePhaseStatus === 'pending' ? '待機中' : activePhaseStatus || 'Pending'
   const selectedPhaseContextAction =
     phaseContextActions.find((action) => action.id === phaseContextActionId)
     ?? primaryExecutableAction
@@ -4245,14 +4709,38 @@ export default function App() {
                                     {autoLoopLoading ? 'Checking' : autoLoopStatus?.running ? (autoLoopStatus.stop_pending ? 'Stop Pending' : 'Running') : 'Idle'}
                                   </span>
                                 </div>
+                                <div className="mb-2 rounded border border-zinc-800 bg-black/20 px-3 py-2">
+                                  <div className="grid gap-2 text-[10px] md:grid-cols-3">
+                                    <div>
+                                      <div className="uppercase tracking-wide text-zinc-500">Current Worker</div>
+                                      <div className="mt-0.5 font-semibold text-zinc-100">{activeOwner || 'Unknown'}</div>
+                                    </div>
+                                    <div>
+                                      <div className="uppercase tracking-wide text-zinc-500">Status</div>
+                                      <div className="mt-0.5 font-semibold text-zinc-200">{ownerStatusLabel}</div>
+                                    </div>
+                                    <div>
+                                      <div className="uppercase tracking-wide text-zinc-500">Elapsed</div>
+                                      <div className="mt-0.5 font-mono text-zinc-200">{(ownerWorkingNow ? (activeExecutionElapsed ?? activePhaseElapsed) : activePhaseElapsed) || '00:00'}</div>
+                                    </div>
+                                  </div>
+                                </div>
                                 <div className="flex flex-wrap gap-2">
                                   <button
                                     type="button"
-                                    onClick={() => void startAutoLoop(selectedTaxonomy, activeTargetName)}
+                                    onClick={openAutoLoopLaunchModal}
                                     disabled={autoLoopLoading || autoLoopMutating !== null || autoLoopStatus?.running === true}
                                     className="rounded border border-cyan-500/30 bg-cyan-500/15 px-3 py-1.5 text-[10px] font-semibold text-cyan-100 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
                                   >
                                     {autoLoopMutating === 'start' ? 'Starting...' : 'Start Auto-Loop'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void openRallyConversation()}
+                                    disabled={autoLoopLoading}
+                                    className="rounded border border-indigo-500/30 bg-indigo-500/15 px-3 py-1.5 text-[10px] font-semibold text-indigo-100 disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+                                  >
+                                    View Rally
                                   </button>
                                   <button
                                     type="button"
@@ -5342,6 +5830,39 @@ export default function App() {
           }}
         />
       )}
+      {autoLoopLaunchModalOpen && selectedTaxonomy && targetRun && (
+        <AutoLoopLaunchModal
+          taxonomy={selectedTaxonomy}
+          runName={targetRun}
+          phase={activeDetailPhase || ''}
+          assignment={activeAssignment}
+          specialist={activeSpecialist}
+          starting={autoLoopMutating === 'start'}
+          onClose={() => setAutoLoopLaunchModalOpen(false)}
+          onChangeAssignment={() => {
+            setAutoLoopLaunchModalOpen(false)
+            void openSpecialistSelectionForPhase(activeDetailPhase || 'REVIEW_NEEDED')
+          }}
+          onStart={async (buildScript) => {
+            const runName = targetDetail?.name ?? targetRun
+            await startAutoLoop(selectedTaxonomy, runName, buildScript)
+            setAutoLoopLaunchModalOpen(false)
+          }}
+        />
+      )}
+      {rallyModalOpen && targetRun && (
+        <RallyConversationModal
+          runName={targetRun}
+          messages={rallyMessages}
+          loading={rallyLoading}
+          onClose={() => setRallyModalOpen(false)}
+          autoLoopRunning={autoLoopStatus?.running ?? false}
+          stopPending={autoLoopStatus?.stop_pending ?? false}
+          currentOwner={agentOSData?.run_state?.current_owner ?? ''}
+          elapsedDisplay={(ownerWorkingNow ? (activeExecutionElapsed ?? activePhaseElapsed) : activePhaseElapsed) ?? null}
+          specialistCodes={rallySpecialistCodes}
+        />
+      )}
       {createSpecialistModalOpen && specialistCandidates && selectedTaxonomy && targetRun && (
         <CreateSpecialistModal
           taxonomy={selectedTaxonomy}
@@ -5366,6 +5887,45 @@ export default function App() {
         />
       )}
       {selectedExecutionLog && <ExecutionLogModal job={selectedExecutionLog} onClose={() => setSelectedExecutionLog(null)} />}
+
+      {/* ── Auto-loop stop notification toast ──────────────────────── */}
+      {loopStopToast && (
+        <div className="fixed bottom-5 right-5 z-[200] w-80 animate-in fade-in slide-in-from-bottom-3">
+          <div className={`rounded-xl border shadow-2xl shadow-black/60 px-4 py-3 ${
+            loopStopToast.lastExit !== null && loopStopToast.lastExit !== 0
+              ? 'border-red-500/40 bg-red-950/90'
+              : 'border-zinc-700 bg-zinc-900/95'
+          }`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className={`text-[11px] font-bold uppercase tracking-wide ${
+                  loopStopToast.lastExit !== null && loopStopToast.lastExit !== 0
+                    ? 'text-red-300'
+                    : 'text-zinc-300'
+                }`}>
+                  {loopStopToast.lastExit !== null && loopStopToast.lastExit !== 0
+                    ? '⚠ Auto-Loop Stopped (Error)'
+                    : '■ Auto-Loop Stopped'}
+                </div>
+                <div className="mt-1 space-y-0.5 text-[10px] text-zinc-400">
+                  {loopStopToast.stopReason && (
+                    <div>Reason: <span className="font-mono text-zinc-200">{loopStopToast.stopReason}</span></div>
+                  )}
+                  {loopStopToast.lastExit !== null && (
+                    <div>Exit: <span className={`font-mono ${loopStopToast.lastExit !== 0 ? 'text-red-300' : 'text-emerald-300'}`}>{loopStopToast.lastExit}</span></div>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => setLoopStopToast(null)}
+                className="flex-shrink-0 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-[10px] text-zinc-400 hover:text-zinc-200"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -60,3 +60,9 @@
 ---
 
 ## Notes
+
+---
+
+```apsf-judge-advisory
+{"recommendation": "Accept", "human_owned_blocker": false}
+```

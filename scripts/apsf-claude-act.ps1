@@ -311,8 +311,11 @@ function Test-Artifact {
 
     $cleanContent = $Content
     if ($lines.Count -ge 3 -and $firstLine -match '^```') {
+        # Search LAST plain ``` to find the outer closing fence.
+        # Searching first would mistake an inner ```apsf-judge-advisory``` closing fence
+        # for the outer fence, truncating the advisory block and breaking the regex match.
         $closingFenceIndex = -1
-        for ($i = 1; $i -lt $lines.Count; $i++) {
+        for ($i = $lines.Count - 1; $i -ge 1; $i--) {
             if ($lines[$i].Trim() -eq '```') {
                 $closingFenceIndex = $i
                 break
