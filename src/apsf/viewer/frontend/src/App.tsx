@@ -22,46 +22,38 @@ import type {
   RunningExecutionState,
   AutoLoopStatus,
   RallyMessage,
-  SpecialistCandidateItem,
   SpecialistCandidatesData,
   AgentOSInfo,
   CreateSpecialistResult,
 } from './types'
-
-function stripMarkdownForSummary(markdown: string) {
-  return markdown
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/^#{1,6}\s*/gm, '')
-    .replace(/^\|.*\|$/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '• ')
-    .replace(/^\s*\d+\.\s+/gm, '• ')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/\r/g, '')
-}
-
-// Extract first meaningful line from raw markdown for stop-summary display
-function extractSummaryLine(markdown: string, maxLen = 130): string {
-  return (
-    stripMarkdownForSummary(markdown)
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l && l !== '---' && !/^•\s*\[[ xX]\]/.test(l) && l.length > 10)
-      .at(0)
-      ?.slice(0, maxLen) ?? ''
-  )
-}
-
-// Parse P/B/C specialist codes from execution-assignment.md text
-function parseSpecialistCodes(content: string): { planner: string; builder: string; critic: string } {
-  const extract = (prefix: string) => {
-    const m = content.match(new RegExp(`${prefix}-TYPE:\\s*([A-Z][A-Z0-9-]+)`, 'i'))
-    return m ? m[1].trim() : ''
-  }
-  return { planner: extract('P'), builder: extract('B'), critic: extract('C') }
-}
+import {
+  extractSummaryLine,
+  formatDuration,
+  formatRelativeTime,
+  formatElapsedMs,
+  parseSatisfiabilityReason,
+  buildExecutionLogText,
+  hasExecutionLogContent,
+  formatAgentOSTimestamp,
+  prettifyActionId,
+  summarizeExecutionIntent,
+  summarizeExecutionOutcome,
+  loadStoredStringArray,
+} from './utils/formatting'
+import {
+  getArtifactDisplayMeta,
+  buildArtifactReferenceGroups,
+} from './utils/artifacts'
+import {
+  parseSpecialistCodes,
+  deriveSpecialistPathPreview,
+  slugifySpecialistName,
+  defaultSpecialistTitle,
+  buildSpecialistMarkdownTemplate,
+  parseSpecialistMarkdownImport,
+  validateImportedSpecialistDraft,
+  mergeCreatedSpecialistCandidate,
+} from './utils/specialist'
 
 const API_BASE = '/api'
 const RUN_LIST_REFRESH_MS = 30000
@@ -81,44 +73,6 @@ const CODEX_PRESET_RULES = {
     allowedPhases: new Set(['REVIEW_NEEDED', 'IMPROVE_NEEDED', 'TRANSCRIPT_RECOMMENDED']),
   },
 } as const
-
-const formatDuration = (start?: string | null, end?: string | null) => {
-  if (!start || !end) return null
-  try {
-    const d1 = new Date(start)
-    const d2 = new Date(end)
-    const diff = Math.floor((d2.getTime() - d1.getTime()) / 1000)
-    if (diff < 0) return null
-    if (diff < 60) return `${diff}s`
-    return `${Math.floor(diff / 60)}m ${diff % 60}s`
-  } catch {
-    return null
-  }
-}
-
-const formatRelativeTime = (isoString?: string | null) => {
-  if (!isoString) return '-'
-  try {
-    const date = new Date(isoString)
-    const now = new Date()
-    const diffMs = now.getTime() - date.getTime()
-    const diffSec = Math.floor(diffMs / 1000)
-    
-    if (diffSec < 60) return 'Just now'
-    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
-    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`
-    return date.toLocaleDateString()
-  } catch {
-    return isoString
-  }
-}
-
-const formatElapsedMs = (elapsedMs: number) => {
-  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000))
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`
-}
 
 
 const PhaseBadge = ({ phase }: { phase: string }) => {
@@ -162,14 +116,6 @@ const AssignmentModeBadge = ({ mode }: { mode: string }) => {
     </span>
   )
 }
-const ARTIFACT_REFERENCE_GROUPS = [
-  { key: 'G', label: 'Goal' },
-  { key: 'P', label: 'Plan' },
-  { key: 'B', label: 'Build' },
-  { key: 'I', label: 'Improve' },
-  { key: 'R', label: 'Result' },
-] as const
-
 const TAXONOMY_SECTION_ORDER = ['work', 'fw-improvement', 'sochi-blocks', 'legacy'] as const
 const TAXONOMY_SECTION_LABELS: Record<string, string> = {
   work: 'Work',
@@ -180,97 +126,6 @@ const TAXONOMY_SECTION_LABELS: Record<string, string> = {
 const TAXONOMY_PIN_STORAGE_KEY = 'apsf.viewer.sidebar.pinnedTaxonomies'
 const TAXONOMY_OPEN_STORAGE_KEY = 'apsf.viewer.sidebar.openTaxonomies'
 
-const ARTIFACT_DISPLAY_META: Record<string, { group: (typeof ARTIFACT_REFERENCE_GROUPS)[number]['key']; title: string }> = {
-  'execution-assignment.md': { group: 'G', title: 'Execution Assignment' },
-  'model-assignment.md': { group: 'G', title: 'Model Assignment' },
-  'goal.md': { group: 'G', title: 'Goal' },
-  'plan.md': { group: 'P', title: 'Plan' },
-  'plan_review.md': { group: 'P', title: 'Plan Review' },
-  'handoff.md': { group: 'P', title: 'Handoff' },
-  'build.md': { group: 'B', title: 'Build' },
-  'build_review.md': { group: 'B', title: 'Build Review' },
-  'review.md': { group: 'I', title: 'Review' },
-  'review_review.md': { group: 'I', title: 'Review Rework' },
-  'improve.md': { group: 'I', title: 'Improve' },
-  'improve_review.md': { group: 'I', title: 'Improve Review' },
-  'result.md': { group: 'R', title: 'Result' },
-  'transcript.md': { group: 'R', title: 'Transcript' },
-}
-
-function titleCaseArtifactName(value: string) {
-  return value
-    .replace(/\.md$/i, '')
-    .split(/[_-]+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(' ')
-}
-
-function getArtifactDisplayMeta(name: string) {
-  const exact = ARTIFACT_DISPLAY_META[name]
-  if (exact) {
-    return {
-      group: exact.group,
-      title: exact.title,
-      subtitle: name,
-    }
-  }
-  return {
-    group: 'R' as const,
-    title: titleCaseArtifactName(name),
-    subtitle: name,
-  }
-}
-
-function buildArtifactReferenceGroups(artifacts: ArtifactPreview[]) {
-  const grouped = new Map<string, ArtifactPreview[]>()
-  for (const artifact of artifacts) {
-    if (!artifact.exists) continue
-    const { group } = getArtifactDisplayMeta(artifact.name)
-    const bucket = grouped.get(group) ?? []
-    bucket.push(artifact)
-    grouped.set(group, bucket)
-  }
-  return ARTIFACT_REFERENCE_GROUPS
-    .map((section) => ({
-      ...section,
-      artifacts: (grouped.get(section.key) ?? []).sort((left, right) => left.name.localeCompare(right.name)),
-    }))
-    .filter((section) => section.artifacts.length > 0)
-}
-
-function loadStoredStringArray(key: string, fallback: string[]) {
-  if (typeof window === 'undefined') return fallback
-  try {
-    const raw = window.localStorage.getItem(key)
-    if (!raw) return fallback
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : fallback
-  } catch {
-    return fallback
-  }
-}
-
-function parseSatisfiabilityReason(reason?: string | null) {
-  if (!reason) return { primary: '', warning: null as null | { state: 'EXPLORATORY' | 'UNSATISFIED'; message: string } }
-
-  const markerMatch = reason.match(/\[SATISFIABILITY:\s*(EXPLORATORY|UNSATISFIED)\]\s*([\s\S]*)/i)
-  if (!markerMatch) {
-    return { primary: reason, warning: null as null | { state: 'EXPLORATORY' | 'UNSATISFIED'; message: string } }
-  }
-
-  const markerStart = markerMatch.index ?? 0
-  const primary = reason.slice(0, markerStart).trim()
-  const state = markerMatch[1].toUpperCase() as 'EXPLORATORY' | 'UNSATISFIED'
-  const message = markerMatch[2].trim()
-  return {
-    primary,
-    warning: {
-      state,
-      message,
-    },
-  }
-}
 
 function SatisfiabilityWarning({ reason }: { reason?: string | null }) {
   const parsed = parseSatisfiabilityReason(reason)
@@ -307,75 +162,6 @@ function CopyButton({ text }: { text: string }) {
       {copied ? <Check size={14} /> : <Copy size={14} />}
     </button>
   )
-}
-
-function buildExecutionLogText(stdout?: string | null, stderr?: string | null) {
-  const parts: string[] = []
-  if (stdout?.trim()) {
-    parts.push(`STDOUT\n${stdout.trim()}`)
-  }
-  if (stderr?.trim()) {
-    parts.push(`STDERR\n${stderr.trim()}`)
-  }
-  return parts.join('\n\n')
-}
-
-function hasExecutionLogContent(stdout?: string | null, stderr?: string | null) {
-  return Boolean(stdout?.trim() || stderr?.trim())
-}
-
-function formatAgentOSTimestamp(value?: string | null) {
-  if (!value) return '—'
-  try {
-    return new Date(value).toLocaleString()
-  } catch {
-    return value
-  }
-}
-
-
-function prettifyActionId(actionId?: string | null) {
-  if (!actionId) return 'Unknown Action'
-  return actionId
-    .split(/[-_]/g)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
-}
-
-function summarizeExecutionIntent(actionId?: string | null, command?: string | null, actionType?: string | null) {
-  const normalized = (actionId || '').trim()
-  const commandText = (command || '').trim().toLowerCase()
-  const typeText = (actionType || '').trim().toLowerCase()
-  if (normalized === 'phase-primary') {
-    if (typeText === 'build' || commandText.includes('apsf-wrapper-build') || commandText.includes('apsf build')) return 'Ran Builder'
-    if (typeText === 'act') {
-      if (commandText.includes('review_needed') || commandText.includes('critic')) return 'Ran Critic'
-      if (commandText.includes('plan_needed') || commandText.includes('planner')) return 'Ran Planner'
-      return 'Ran phase actor'
-    }
-    return 'Primary phase action executed'
-  }
-  if (normalized === 'rerun-plan') return 'Returned the run to Planner'
-  if (normalized === 'rerun-build') return 'Returned the run to Builder'
-  if (normalized === 'rerun-review') return 'Returned the run to Critic'
-  if (normalized === 'rerun-improve') return 'Reopened the Judge step'
-  if (normalized === 'act') return 'Ran the current phase actor'
-  if (normalized === 'capture-snapshot') return 'Captured a recovery snapshot'
-  if (normalized === 'capture-checkpoint') return 'Captured an execution checkpoint'
-  if (normalized === 'apply-snapshot') return 'Applied a recovery snapshot'
-  if (normalized === 'apply-checkpoint') return 'Applied an execution checkpoint'
-
-  const text = (command || '').trim()
-  if (!text) return prettifyActionId(actionId)
-  const firstLine = text.split('\n')[0]?.trim()
-  return firstLine || prettifyActionId(actionId)
-}
-
-function summarizeExecutionOutcome(stdoutSummary?: string | null, stderrSummary?: string | null) {
-  const source = (stderrSummary || stdoutSummary || '').trim()
-  if (!source) return 'No summary recorded.'
-  return source.split('\n').map((line) => line.trim()).find(Boolean) || 'No summary recorded.'
 }
 
 const ReworkBadge = ({ count }: { count: number }) => {
@@ -535,199 +321,6 @@ function ConfirmModal({ config, onCancel }: { config: ModalConfig; onCancel: () 
       </div>
     </div>
   )
-}
-
-function deriveSpecialistPathPreview(role: SpecialistCandidatesData['role'], code: string, slug: string) {
-  const normalizedSlug = slug
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/-{2,}/g, '-')
-
-  const directory =
-    role === 'Planner'
-      ? 'framework/agents/planners'
-      : role === 'Builder'
-        ? 'framework/agents/builders'
-        : role === 'Critic'
-          ? 'framework/agents/critics'
-          : ''
-
-  if (!directory || !code.trim() || !normalizedSlug) return ''
-  return `${directory}/${normalizedSlug}.md`
-}
-
-function slugifySpecialistName(raw: string) {
-  return raw
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/-{2,}/g, '-')
-}
-
-function defaultSpecialistTitle(role: 'Planner' | 'Builder' | 'Critic') {
-  return role === 'Planner'
-    ? 'Verification Planning Planner'
-    : role === 'Builder'
-      ? 'Verification Reliability Builder'
-      : 'Verification Reliability Critic'
-}
-
-function buildSpecialistMarkdownTemplate({
-  role,
-  specialistCode,
-  title,
-  scope,
-  useWhen,
-  outOfScope,
-  evaluationCriteria,
-}: {
-  role: 'Planner' | 'Builder' | 'Critic'
-  specialistCode: string
-  title: string
-  scope: string
-  useWhen: string
-  outOfScope: string
-  evaluationCriteria: string
-}) {
-  const resolvedTitle = title.trim() || defaultSpecialistTitle(role)
-  const resolvedCode = specialistCode.trim() || (role === 'Planner' ? 'P-13' : role === 'Builder' ? 'B-08' : 'C-09')
-  const roleLabel = role
-  return [
-    `# Specialist: ${resolvedTitle} (${resolvedCode})`,
-    '',
-    `You are the ${resolvedTitle}.`,
-    '',
-    '## Scope',
-    '',
-    scope.trim() || '[Describe the specialist boundary and primary responsibility.]',
-    '',
-    '## Use This Specialist When',
-    '',
-    useWhen.trim() || '[Describe the situations where this specialist should be chosen.]',
-    '',
-    '## Out of Scope',
-    '',
-    outOfScope.trim() || '[Describe what this specialist should not cover.]',
-    '',
-    '## Evaluation Criteria',
-    '',
-    evaluationCriteria.trim() || '[Describe how good output should be judged.]',
-    '',
-    '## Output Style',
-    '',
-    `- Stay within the ${roleLabel} role boundary.`,
-    '- Keep recommendations concrete, scoped, and reviewable.',
-  ].join('\n')
-}
-
-function extractMarkdownSection(markdown: string, heading: string) {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const pattern = new RegExp(`^##\\s+${escaped}\\s*$([\\s\\S]*?)(?=^##\\s+|\\Z)`, 'im')
-  const match = markdown.match(pattern)
-  return match?.[1]?.trim() ?? ''
-}
-
-function parseSpecialistMarkdownImport(markdown: string, role: 'Planner' | 'Builder' | 'Critic') {
-  const headerMatch = markdown.match(/^#\s+Specialist:\s*(.+?)\s*\(([A-Z]-\d{2})\)\s*$/im)
-  const title = headerMatch?.[1]?.trim() ?? ''
-  const specialistCode = headerMatch?.[2]?.trim() ?? ''
-  const scope = extractMarkdownSection(markdown, 'Scope')
-  const useWhen = extractMarkdownSection(markdown, 'Use This Specialist When')
-  const outOfScope = extractMarkdownSection(markdown, 'Out of Scope')
-  const evaluationCriteria = extractMarkdownSection(markdown, 'Evaluation Criteria')
-  const inferredSlug = slugifySpecialistName(title)
-
-  if (!title && !scope && !useWhen && !outOfScope && !evaluationCriteria) {
-    return {
-      error: `Could not parse a specialist markdown template for ${role}.`,
-    }
-  }
-
-  return {
-    specialistCode,
-    title,
-    slug: inferredSlug,
-    scope,
-    useWhen,
-    outOfScope,
-    evaluationCriteria,
-  }
-}
-
-function validateImportedSpecialistDraft(
-  parsed: ReturnType<typeof parseSpecialistMarkdownImport>,
-  role: 'Planner' | 'Builder' | 'Critic',
-) {
-  if ('error' in parsed) {
-    return {
-      ok: false,
-      severity: 'error' as const,
-      message: parsed.error ?? `Could not parse a specialist markdown template for ${role}.`,
-    }
-  }
-
-  const expectedPrefix = role === 'Planner' ? 'P-' : role === 'Builder' ? 'B-' : 'C-'
-  const issues: string[] = []
-
-  if (!parsed.specialistCode) {
-    issues.push(`missing specialist code in header; expected ${expectedPrefix}xx`)
-  } else if (!new RegExp(`^${expectedPrefix}\\d{2}$`, 'i').test(parsed.specialistCode)) {
-    issues.push(`code ${parsed.specialistCode} does not match role ${role}; expected prefix ${expectedPrefix}`)
-  }
-
-  if (!parsed.title.trim()) {
-    issues.push('missing title in header')
-  }
-
-  if (!parsed.slug.trim()) {
-    issues.push('could not derive a valid slug from the title')
-  }
-
-  if (issues.length > 0) {
-    return {
-      ok: false,
-      severity: 'warning' as const,
-      message: `Prefill applied with validation issues: ${issues.join('; ')}. Review the fields before creating.`,
-    }
-  }
-
-  return {
-    ok: true,
-    severity: 'success' as const,
-    message: `Markdown prefill is valid for ${role}. Review the fields, then create a new specialist asset if needed.`,
-  }
-}
-
-function mergeCreatedSpecialistCandidate(
-  data: SpecialistCandidatesData | null,
-  result: CreateSpecialistResult,
-): SpecialistCandidatesData | null {
-  if (!data || data.role !== result.role) return data
-  if (data.candidates.some((candidate) => candidate.code === result.specialist_code)) {
-    return data
-  }
-
-  const createdCandidate: SpecialistCandidateItem = {
-    code: result.specialist_code,
-    name: result.title,
-    score: 0,
-    reason: 'Newly created specialist for this session. Assign explicitly if this run should use it.',
-    use_when: result.use_when,
-    path: result.relative_path,
-    scope: result.scope,
-    out_of_scope: result.out_of_scope,
-    evaluation_criteria: result.evaluation_criteria,
-    is_recommended: false,
-    is_current: false,
-  }
-
-  return {
-    ...data,
-    candidates: [createdCandidate, ...data.candidates],
-  }
 }
 
 function SpecialistSelectionModal({
