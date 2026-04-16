@@ -63,6 +63,15 @@ import {
   ExecutionLogModal,
   ArtifactReferenceModal,
 } from './components/modals'
+import {
+  apiLoadRunDetail,
+  apiLoadHistory,
+  apiLoadOperatorMatrix,
+  apiLoadRecentExecutions,
+  apiLoadAgentOS,
+  apiLoadSpecialistCandidates,
+} from './api/runsApi'
+import { apiLoadViewerConfig, apiUpdateViewerConfig } from './api/configApi'
 
 const API_BASE = '/api'
 const RUN_LIST_REFRESH_MS = 30000
@@ -182,63 +191,17 @@ export default function App() {
     }
   }
 
-  const parseJsonOrThrowText = async (resp: Response) => {
-    const text = await resp.text()
-    if (!text) return {}
-    try {
-      return JSON.parse(text)
-    } catch {
-      throw new Error(text)
-    }
-  }
-
-  const loadRunDetail = async (taxonomy: string, runName: string) => {
-    const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}`)
-    const data = await parseJsonOrThrowText(resp)
-    if (!resp.ok) {
-      const detail = typeof data === 'object' && data && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : ''
-      throw new Error(detail || `Failed to load run detail (${resp.status})`)
-    }
-    return data
-  }
-
-  const loadHistory = async (taxonomy: string, runName: string): Promise<RunHistory> => {
-    const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/history`)
-    const data = await parseJsonOrThrowText(resp)
-    if (!resp.ok) {
-      const detail = typeof data === 'object' && data && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : ''
-      throw new Error(detail || `Failed to load history (${resp.status})`)
-    }
-    return data as RunHistory
-  }
-
-  const loadOperatorMatrix = async (): Promise<MatrixRow[]> => {
-    const resp = await fetch(`${API_BASE}/operator-matrix`)
-    return resp.json()
-  }
-
-  const loadViewerConfig = async (): Promise<ViewerConfig> => {
-    const resp = await fetch(`${API_BASE}/viewer-config`)
-    if (!resp.ok) throw new Error(`Failed to load viewer config (${resp.status})`)
-    return resp.json()
-  }
-
-  const loadRecentExecutions = async (): Promise<ActionExecutionRecord[]> => {
-    const resp = await fetch(`${API_BASE}/executions/recent?limit=12&top_level_only=true`)
-    return resp.json()
-  }
+  const loadRunDetail = apiLoadRunDetail
+  const loadHistory = apiLoadHistory
+  const loadOperatorMatrix = apiLoadOperatorMatrix
+  const loadViewerConfig = apiLoadViewerConfig
+  const loadRecentExecutions = apiLoadRecentExecutions
 
   const updateViewerConfig = async (patch: Partial<Pick<ViewerConfig, 'execution_mode' | 'cli_tool_mode' | 'build_max_turns' | 'run_detail_refresh_ms'>>) => {
     const savingKey = patch.execution_mode ? `execution:${patch.execution_mode}` : patch.cli_tool_mode ? `cli:${patch.cli_tool_mode}` : patch.build_max_turns !== undefined ? 'build_max_turns' : 'run_detail_refresh_ms'
     setViewerConfigSavingKey(savingKey)
     try {
-      const resp = await fetch(`${API_BASE}/viewer-config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      })
-      const data = await resp.json()
-      if (!resp.ok) throw new Error(data.detail ?? `Failed to update viewer config (${resp.status})`)
+      const data = await apiUpdateViewerConfig(patch)
       setViewerConfig(data)
       const [rows, recent] = await Promise.all([
         loadOperatorMatrix().catch(() => []),
@@ -273,23 +236,7 @@ export default function App() {
     }
   }
 
-  const loadAgentOS = useCallback(async (taxonomy: string, runName: string): Promise<AgentOSInfo> => {
-    const resp = await fetch(`${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/agent-os`)
-    const data = await parseJsonOrThrowText(resp)
-    if (!resp.ok) {
-      const detail = typeof data === 'object' && data && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : ''
-      throw new Error(detail || `Failed to load Agent OS (${resp.status})`)
-    }
-    return {
-      run_state: data.run_state ?? null,
-      artifact_manifest: data.artifact_manifest ?? null,
-      gate_results: Array.isArray(data.gate_results) ? data.gate_results : [],
-      force_audit: Array.isArray(data.force_audit) ? data.force_audit : null,
-      recovery_checkpoints: Array.isArray(data.recovery_checkpoints) ? data.recovery_checkpoints : [],
-      recovery_snapshots: Array.isArray(data.recovery_snapshots) ? data.recovery_snapshots : [],
-      recovery_apply_traces: Array.isArray(data.recovery_apply_traces) ? data.recovery_apply_traces : [],
-    }
-  }, [])
+  const loadAgentOS = useCallback(apiLoadAgentOS, [])
 
   const refreshAgentOS = useCallback(async (taxonomy: string, runName: string) => {
     setAgentOSLoading(true)
@@ -410,13 +357,7 @@ export default function App() {
 
   const loadSpecialistCandidates = async (taxonomy: string, runName: string, phaseOverride?: string | null): Promise<SpecialistCandidatesData | null> => {
     try {
-      const params = new URLSearchParams()
-      if (phaseOverride) params.set('phase', phaseOverride)
-      const resp = await fetch(
-        `${API_BASE}/runs/${taxonomy}/${encodeURIComponent(runName)}/specialist-candidates${params.toString() ? `?${params.toString()}` : ''}`
-      )
-      if (!resp.ok) return null
-      const data = (await resp.json()) as SpecialistCandidatesData
+      const data = await apiLoadSpecialistCandidates(taxonomy, runName, phaseOverride)
       setSpecialistCandidates(data)
       return data
     } catch {
