@@ -7,17 +7,17 @@ import {
 } from '../badges'
 import { parseSatisfiabilityReason } from '../../utils/formatting'
 
+const IMPROVE_DECISION_ACTION_IDS = ['accept-improve', 'phase-primary', 'rerun-plan', 'rerun-build', 'rerun-review']
+
+const REVIEW_FILES = ['plan_review.md', 'build_review.md', 'review_review.md', 'improve_review.md']
+
 interface DetailTabProps {
   detail: RunDetail
   targetDetail: RunDetail | null
   history: RunHistory | null
   historyRun: string | null
-  childRuns: NonNullable<RunDetail['children']>
   activeTargetName: string
-  targetReworkCount: number
-  improveDecisionActions: OperatorAction[]
-  regularExecutableActions: OperatorAction[]
-  regularHumanActions: OperatorAction[]
+  activeDetailPhase: string | null
   recommendedActionId: string | null
   selectedTaxonomy: string | null
   renderOperatorAction: (
@@ -33,16 +33,32 @@ export function DetailTab({
   targetDetail,
   history,
   historyRun,
-  childRuns,
   activeTargetName,
-  targetReworkCount,
-  improveDecisionActions,
-  regularExecutableActions,
-  regularHumanActions,
+  activeDetailPhase,
   recommendedActionId,
   selectedTaxonomy,
   renderOperatorAction,
 }: DetailTabProps) {
+  const childRuns = detail?.children ?? []
+  const targetReworkCount = REVIEW_FILES.filter((n) => (targetDetail?.artifacts ?? detail?.artifacts ?? []).some((a) => a.name === n && a.exists)).length
+  const detailActions = targetDetail?.operator_actions ?? []
+  const sortedDetailActions = [...detailActions].sort((a, b) => {
+    if (a.id === recommendedActionId) return -1
+    if (b.id === recommendedActionId) return 1
+    if (a.primary && !b.primary) return -1
+    if (!a.primary && b.primary) return 1
+    return 0
+  })
+  const executableActions = sortedDetailActions.filter((action) => action.execution_type !== 'human')
+  const humanActions = sortedDetailActions.filter((action) => action.execution_type === 'human')
+  const improveDecisionActions = activeDetailPhase === 'IMPROVE_NEEDED'
+    ? IMPROVE_DECISION_ACTION_IDS
+        .map((id) => sortedDetailActions.find((action) => action.id === id) ?? null)
+        .filter((action): action is OperatorAction => action !== null)
+    : []
+  const improveDecisionActionIdSet = new Set(improveDecisionActions.map((action) => action.id))
+  const regularExecutableActions = executableActions.filter((action) => !improveDecisionActionIdSet.has(action.id))
+  const regularHumanActions = humanActions.filter((action) => !improveDecisionActionIdSet.has(action.id))
   return (
     <div className="space-y-4">
       <div className="grid gap-4 xl:grid-cols-2">

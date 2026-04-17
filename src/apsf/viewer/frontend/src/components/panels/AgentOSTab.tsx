@@ -1,13 +1,12 @@
 import type {
   RunDetail,
+  RunHistory,
   OperatorAction,
   ExecutionResult,
   ActionExecutionRecord,
   AgentOSInfo,
   AgentOSActionFeedback,
   AutoLoopStatus,
-  AssignmentSummary,
-  SpecialistVisibility,
   SpecialistCandidatesData,
 } from '../../types'
 import {
@@ -21,11 +20,14 @@ import {
   buildExecutionLogText,
   hasExecutionLogContent,
   formatAgentOSTimestamp,
+  formatElapsedMs,
   prettifyActionId,
   summarizeExecutionIntent,
   summarizeExecutionOutcome,
 } from '../../utils/formatting'
 import { getArtifactDisplayMeta } from '../../utils/artifacts'
+
+const AGENT_OS_ACTION_IDS = new Set(['capture-snapshot', 'capture-checkpoint', 'apply-snapshot', 'apply-checkpoint'])
 
 interface AgentOSTabProps {
   agentOSLoading: boolean
@@ -35,27 +37,13 @@ interface AgentOSTabProps {
   targetDetail: RunDetail | null
   selectedTaxonomy: string | null
   targetRun: string | null
-  activePhase: string
-  activePriority: 'Now' | 'Next' | 'Later' | 'Unranked'
-  activeNextRole: string
-  activeDecisionReason: string
-  activeAssignment: AssignmentSummary | null
-  activeSpecialist: SpecialistVisibility | null
   activeJudgeRecommendation: RunDetail['judge_recommendation']
-  activeRunExecutionState: { actionId: string; startedAt: number } | null
-  activeRunExecutionId: string | null
-  activeExecutionElapsed: string | null
-  activePhaseElapsed: string | null
-  isActiveRunBusy: boolean
-  activeOwner: string
-  ownerStatusLabel: string
-  ownerWorkingNow: boolean
-  activeOperatorCommand: string
   activeDetail: RunDetail | null
-  latestRunExecution: ActionExecutionRecord | null
-  recentAgentOSExecutions: ActionExecutionRecord[]
-  failingGateResults: AgentOSInfo['gate_results']
-  showDetailedAssignmentCard: boolean
+  history: RunHistory | null
+  recentExecutions: ActionExecutionRecord[]
+  searchTerm: string
+  executionNow: number
+  executingStateForRun: (taxonomy: string, runName: string) => { actionId: string; startedAt: number } | null
   selectedRecoveryCheckpointId: string | null
   setSelectedRecoveryCheckpointId: (id: string | null) => void
   selectedRecoverySnapshotId: string | null
@@ -108,27 +96,13 @@ export function AgentOSTab({
   targetDetail,
   selectedTaxonomy,
   targetRun,
-  activePhase,
-  activePriority,
-  activeNextRole,
-  activeDecisionReason,
-  activeAssignment,
-  activeSpecialist,
   activeJudgeRecommendation,
-  activeRunExecutionState,
-  activeRunExecutionId,
-  activeExecutionElapsed,
-  activePhaseElapsed,
-  isActiveRunBusy,
-  activeOwner,
-  ownerStatusLabel,
-  ownerWorkingNow,
-  activeOperatorCommand,
   activeDetail,
-  latestRunExecution,
-  recentAgentOSExecutions,
-  failingGateResults,
-  showDetailedAssignmentCard,
+  history,
+  recentExecutions,
+  searchTerm,
+  executionNow,
+  executingStateForRun,
   selectedRecoveryCheckpointId,
   setSelectedRecoveryCheckpointId,
   selectedRecoverySnapshotId,
@@ -167,6 +141,29 @@ export function AgentOSTab({
   openArtifactReferenceModal,
   activeTargetName,
 }: AgentOSTabProps) {
+  const activeAssignment = activeDetail?.assignment_summary ?? null
+  const activeSpecialist = activeDetail?.specialist_visibility ?? null
+  const activePhase = activeDetail?.phase ?? ''
+  const activePriority = activeDetail?.priority ?? 'Unranked'
+  const activeNextRole = activeDetail?.next_role ?? ''
+  const activeOperatorCommand = activeDetail?.operator_command ?? ''
+  const activeDecisionReason = activeDetail?.decision_reason ?? ''
+  const activeRunExecutionState = selectedTaxonomy && activeTargetName ? executingStateForRun(selectedTaxonomy, activeTargetName) : null
+  const activeRunExecutionId = activeRunExecutionState?.actionId ?? null
+  const isActiveRunBusy = activeRunExecutionId !== null
+  const activeExecutionElapsed = activeRunExecutionState ? formatElapsedMs(executionNow - activeRunExecutionState.startedAt) : null
+  const activePhaseStatus = agentOSData?.run_state?.phase_status ?? ''
+  const ownerWorkingNow = activePhaseStatus === 'in_progress'
+  const ownerStatusLabel = ownerWorkingNow ? '実行中' : activePhaseStatus === 'pending' ? '待機中' : activePhaseStatus || 'Pending'
+  const activeOwner = agentOSData?.run_state?.current_owner ?? activeNextRole
+  const phaseEnteredAtMs = agentOSData?.run_state?.phase_entered_at ? Date.parse(agentOSData.run_state.phase_entered_at) : NaN
+  const activePhaseElapsed = Number.isFinite(phaseEnteredAtMs) ? formatElapsedMs(Math.max(0, executionNow - phaseEnteredAtMs)) : null
+  const failingGateResults = agentOSData?.gate_results?.filter((gate) => !gate.passed) ?? []
+  const recentAgentOSExecutions = selectedTaxonomy && targetRun
+    ? recentExecutions.filter((j) => j.taxonomy === selectedTaxonomy && j.run_name === targetRun && AGENT_OS_ACTION_IDS.has(j.action_id)).slice(0, 5)
+    : []
+  const latestRunExecution = history?.latest_execution ?? (selectedTaxonomy && targetRun ? recentExecutions.find((j) => j.taxonomy === selectedTaxonomy && j.run_name === targetRun) ?? null : null)
+  const showDetailedAssignmentCard = searchTerm.trim() === '__show_assignment_details__'
   return (
     <div className="space-y-4">
       {agentOSLoading && (

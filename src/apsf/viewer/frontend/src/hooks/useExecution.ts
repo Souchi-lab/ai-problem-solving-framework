@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type {
   OperatorAction,
   MatrixRow,
@@ -378,6 +378,13 @@ export function useExecution({
     }
     void runAgentOSAction(taxonomy, runName, { action_id: actionId })
   }
+
+  // Keep executionNow ticking while any run is executing or a run is selected
+  useEffect(() => {
+    if (Object.keys(executingRuns).length === 0 && !targetRun) return
+    const timer = window.setInterval(() => setExecutionNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [executingRuns, targetRun])
 
   return {
     executionResult,
