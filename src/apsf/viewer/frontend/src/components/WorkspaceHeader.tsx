@@ -27,7 +27,6 @@ interface WorkspaceHeaderProps {
   setSidebarOpen: (open: boolean) => void
   workspaceTab: 'detail' | 'management' | 'activity' | 'agent-os'
   setWorkspaceTab: (tab: 'detail' | 'management' | 'activity' | 'agent-os') => void
-  runLineage: RunLineageEntry[]
   currentViewOpen: boolean
   setCurrentViewOpen: React.Dispatch<React.SetStateAction<boolean>>
   selectedTaxonomy: string | null
@@ -44,7 +43,6 @@ export function WorkspaceHeader({
   setSidebarOpen,
   workspaceTab,
   setWorkspaceTab,
-  runLineage,
   currentViewOpen,
   setCurrentViewOpen,
   selectedTaxonomy,
@@ -54,6 +52,11 @@ export function WorkspaceHeader({
   fetchTargetDetail,
 }: WorkspaceHeaderProps) {
   const artifacts = targetDetail?.artifacts ?? detail.artifacts
+  const childRuns = detail.children ?? []
+  const runLineage: RunLineageEntry[] = [
+    { name: detail.name, label: 'Parent', displayName: detail.name, phase: detail.phase, nextRole: detail.next_role, hasChildren: childRuns.length > 0, isParent: true, isSelected: targetRun === detail.name },
+    ...childRuns.map((child) => ({ name: child.name, label: 'Child', displayName: child.child_name, phase: child.phase, nextRole: child.next_role, hasChildren: child.has_children, isParent: false, isSelected: targetRun === child.name })),
+  ]
 
   return (
     <div className="sticky top-0 z-20 -mx-4 mb-4 border-b border-zinc-800 bg-zinc-950/95 px-4 pb-4 backdrop-blur">

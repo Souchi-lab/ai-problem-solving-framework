@@ -7,12 +7,12 @@ import {
   PriorityBadge,
 } from '../badges'
 
-interface TaxonomySection {
-  taxonomy: string
-  label: string
-  pinned: boolean
-  open: boolean
-  runs: RunSummary[]
+const TAXONOMY_SECTION_ORDER = ['work', 'fw-improvement', 'sochi-blocks', 'legacy'] as const
+const TAXONOMY_SECTION_LABELS: Record<string, string> = {
+  work: 'Work',
+  'fw-improvement': 'FW Improvement',
+  'sochi-blocks': 'SoChi Blocks',
+  legacy: 'Legacy',
 }
 
 interface SidebarPanelProps {
@@ -22,14 +22,15 @@ interface SidebarPanelProps {
   setHumanBlockerFilter: (value: 'all' | 'blocked') => void
   isLoadingRuns: boolean
   runsError: string | null
-  filteredRuns: RunSummary[]
-  taxonomySections: TaxonomySection[]
+  runs: RunSummary[]
+  pinnedTaxonomies: string[]
+  openTaxonomies: string[]
+  setPinnedTaxonomies: React.Dispatch<React.SetStateAction<string[]>>
+  setOpenTaxonomies: React.Dispatch<React.SetStateAction<string[]>>
   selectedRun: string | null
   fetchRuns: () => void
   setIsLoadingRuns: (value: boolean) => void
   fetchDetail: (taxonomy: string, runName: string) => Promise<void>
-  toggleOpenTaxonomy: (taxonomy: string) => void
-  togglePinnedTaxonomy: (taxonomy: string) => void
   setSidebarOpen: (value: boolean) => void
   setViewerConfigModalOpen: (value: boolean) => void
 }
@@ -41,17 +42,74 @@ export function SidebarPanel({
   setHumanBlockerFilter,
   isLoadingRuns,
   runsError,
-  filteredRuns,
-  taxonomySections,
+  runs,
+  pinnedTaxonomies,
+  openTaxonomies,
+  setPinnedTaxonomies,
+  setOpenTaxonomies,
   selectedRun,
   fetchRuns,
   setIsLoadingRuns,
   fetchDetail,
-  toggleOpenTaxonomy,
-  togglePinnedTaxonomy,
   setSidebarOpen,
   setViewerConfigModalOpen,
 }: SidebarPanelProps) {
+  const filteredRuns = runs.filter((run) => {
+    const matchesSearch = run.name.toLowerCase().includes(searchTerm.toLowerCase())
+    const matchesHumanBlocker = humanBlockerFilter === 'all' || Boolean(run.human_blocker_active)
+    return matchesSearch && matchesHumanBlocker
+  })
+
+  const togglePinnedTaxonomy = (taxonomy: string) => {
+    setPinnedTaxonomies((current) =>
+      current.includes(taxonomy) ? current.filter((value) => value !== taxonomy) : [...current, taxonomy],
+    )
+    setOpenTaxonomies((current) => (current.includes(taxonomy) ? current : [...current, taxonomy]))
+  }
+
+  const toggleOpenTaxonomy = (taxonomy: string) => {
+    setOpenTaxonomies((current) =>
+      current.includes(taxonomy) ? current.filter((value) => value !== taxonomy) : [...current, taxonomy],
+    )
+  }
+
+  const taxonomySections = (() => {
+    const grouped = new Map<string, RunSummary[]>()
+    for (const run of filteredRuns) {
+      const bucket = grouped.get(run.taxonomy) ?? []
+      bucket.push(run)
+      grouped.set(run.taxonomy, bucket)
+    }
+    const seen = new Set<string>()
+    const orderedTaxonomies = [
+      ...TAXONOMY_SECTION_ORDER.filter((taxonomy) => grouped.has(taxonomy)),
+      ...Array.from(grouped.keys()).filter((taxonomy) => !TAXONOMY_SECTION_ORDER.includes(taxonomy as (typeof TAXONOMY_SECTION_ORDER)[number])).sort(),
+    ]
+    return orderedTaxonomies
+      .filter((taxonomy) => {
+        if (seen.has(taxonomy)) return false
+        seen.add(taxonomy)
+        return true
+      })
+      .map((taxonomy) => ({
+        taxonomy,
+        label: TAXONOMY_SECTION_LABELS[taxonomy] ?? taxonomy,
+        pinned: pinnedTaxonomies.includes(taxonomy),
+        open: openTaxonomies.includes(taxonomy),
+        runs: (grouped.get(taxonomy) ?? []).sort((left, right) => right.last_modified - left.last_modified),
+      }))
+      .sort((left, right) => {
+        if (left.pinned !== right.pinned) return left.pinned ? -1 : 1
+        const leftIndex = TAXONOMY_SECTION_ORDER.indexOf(left.taxonomy as (typeof TAXONOMY_SECTION_ORDER)[number])
+        const rightIndex = TAXONOMY_SECTION_ORDER.indexOf(right.taxonomy as (typeof TAXONOMY_SECTION_ORDER)[number])
+        if (leftIndex !== -1 || rightIndex !== -1) {
+          if (leftIndex === -1) return 1
+          if (rightIndex === -1) return -1
+          return leftIndex - rightIndex
+        }
+        return left.label.localeCompare(right.label)
+      })
+  })()
   return (
     <aside className="w-72 min-w-[18rem] shrink-0 border-r border-zinc-800 p-4 overflow-y-auto xl:w-80">
       <div className="mb-4 flex items-center gap-2">

@@ -12,7 +12,7 @@ import { CopyButton } from '../badges'
 interface ActivityTabProps {
   jobsSearchTerm: string
   setJobsSearchTerm: (value: string) => void
-  filteredRecentExecutions: ActionExecutionRecord[]
+  recentExecutions: ActionExecutionRecord[]
   setSelectedExecutionLog: (job: ActionExecutionRecord | null) => void
   executionResult: ExecutionResult | null
   saveCommentResult: SaveCommentResult | null
@@ -21,11 +21,12 @@ interface ActivityTabProps {
 export function ActivityTab({
   jobsSearchTerm,
   setJobsSearchTerm,
-  filteredRecentExecutions,
+  recentExecutions,
   setSelectedExecutionLog,
   executionResult,
   saveCommentResult,
 }: ActivityTabProps) {
+  const filteredRecentExecutions = recentExecutions.filter((job) => job.run_name.toLowerCase().includes(jobsSearchTerm.toLowerCase()))
   return (
     <div className="space-y-4">
       <div className="rounded border border-zinc-800 bg-zinc-900/10 p-4">

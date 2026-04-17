@@ -1,4 +1,4 @@
-import type { MatrixRow, OperatorAction, CodexBridgeResult } from '../../types'
+import type { MatrixRow, OperatorAction, CodexBridgeResult, ActionExecutionRecord } from '../../types'
 import { PhaseBadge, PriorityBadge, CodexStatusBadge } from '../badges'
 
 const CODEX_PRESET_RULES = {
@@ -14,10 +14,19 @@ const CODEX_PRESET_RULES = {
   },
 } as const
 
+const ACTIVE_PHASES = new Set(['PLAN_NEEDED', 'BUILD_NEEDED', 'REVIEW_NEEDED', 'IMPROVE_NEEDED', 'RESULT_NEEDED'])
+
+function getCodexPresetsForPhase(phase: string) {
+  return (Object.entries(CODEX_PRESET_RULES) as Array<[CodexBridgeResult['preset_id'], (typeof CODEX_PRESET_RULES)[keyof typeof CODEX_PRESET_RULES]]>)
+    .filter(([, rule]) => rule.allowedPhases.has(phase))
+}
+
 interface ManagementTabProps {
   operatorFilter: 'active' | 'recent' | 'all'
   setOperatorFilter: (value: 'active' | 'recent' | 'all') => void
-  operatorRows: MatrixRow[]
+  matrixRows: MatrixRow[]
+  recentExecutions: ActionExecutionRecord[]
+  searchTerm: string
   targetDetail: { name: string } | null
   detail: { name: string }
   selectedRun: string | null
@@ -30,13 +39,14 @@ interface ManagementTabProps {
   codexError: string | null
   codexResult: CodexBridgeResult | null
   invokeCodexPreset: (presetId: CodexBridgeResult['preset_id'], taxonomy: string, runName: string) => Promise<void>
-  getCodexPresetsForPhase: (phase: string) => Array<[CodexBridgeResult['preset_id'], (typeof CODEX_PRESET_RULES)[keyof typeof CODEX_PRESET_RULES]]>
 }
 
 export function ManagementTab({
   operatorFilter,
   setOperatorFilter,
-  operatorRows,
+  matrixRows,
+  recentExecutions,
+  searchTerm,
   targetDetail,
   detail,
   selectedRun,
@@ -49,8 +59,12 @@ export function ManagementTab({
   codexError,
   codexResult,
   invokeCodexPreset,
-  getCodexPresetsForPhase,
 }: ManagementTabProps) {
+  const recentRunNames = new Set(recentExecutions.map((job) => job.run_name))
+  const operatorRows = matrixRows
+    .filter((row) => row.name.toLowerCase().includes(searchTerm.toLowerCase()))
+    .filter((row) => operatorFilter === 'all' ? true : operatorFilter === 'recent' ? recentRunNames.has(row.name) : ACTIVE_PHASES.has(row.phase))
+    .slice(0, 10)
   return (
     <div className="space-y-4">
       <div className="rounded border border-zinc-800 bg-zinc-900/40 p-4">
