@@ -25,170 +25,51 @@ jobs:
           uname -a
           sw_vers
 
-      - name: "[Phase 1] Rotation verify — 10s interval / 1min rotation / 3min"
+      - name: Make scripts executable
+        shell: bash
+        run: chmod +x scripts/net-mem-stat.sh scripts/net-mem-monitor.sh
+
+      - name: "[Phase 1] One-shot — net-mem-stat.sh"
         shell: bash
         run: |
-          mkdir -p "$HOME/logs"
+          echo "--- single sample ---"
+          bash scripts/net-mem-stat.sh
 
-          get_net_totals() {
-            netstat -ibn 2>/dev/null | awk '
-              NR == 1 {
-                for (i = 1; i <= NF; i++) {
-                  if ($i == "Name")   name_col = i
-                  if ($i == "Ibytes") in_col   = i
-                  if ($i == "Obytes") out_col  = i
-                }
-                next
-              }
-              !name_col || !in_col || !out_col { exit 1 }
-              $name_col == "Name" || $name_col == "lo0" || seen[$name_col]++ { next }
-              $in_col ~ /^[0-9]+$/ && $out_col ~ /^[0-9]+$/ {
-                rx += $in_col
-                tx += $out_col
-              }
-              END {
-                if (!in_col || !out_col) exit 1
-                printf "%s %s\n", rx + 0, tx + 0
-              }'
-          }
-
-          get_mem_totals() {
-            total_bytes="$(sysctl -n hw.memsize 2>/dev/null)" || return 1
-
-            vm_stat 2>/dev/null | awk -v total_bytes="$total_bytes" '
-              /page size of/ {
-                match($0, /[0-9]+/)
-                page_size = substr($0, RSTART, RLENGTH) + 0
-              }
-              /Pages free:/                  { gsub("\\.", "", $3); free       = $3 }
-              /Pages active:/                { gsub("\\.", "", $3); active     = $3 }
-              /Pages inactive:/              { gsub("\\.", "", $3); inactive   = $3 }
-              /Pages speculative:/           { gsub("\\.", "", $3); speculative = $3 }
-              /Pages wired down:/            { gsub("\\.", "", $4); wired      = $4 }
-              /Pages occupied by compressor:/ { gsub("\\.", "", $5); compressed = $5 }
-              END {
-                if (!page_size) page_size = 4096
-                mb = 1024 * 1024
-                free_mb       = (free + speculative) * page_size / mb
-                used_mb       = (active + inactive + wired + compressed) * page_size / mb
-                compressed_mb = compressed * page_size / mb
-                total_mb      = total_bytes / mb
-                printf "%.1f %.1f %.1f %.1f\n",
-                  total_mb, used_mb, free_mb, compressed_mb
-              }'
-          }
-
-          collect() {
-            local rotation_key="$1"
-            local logfile="$HOME/logs/network_${rotation_key}.log"
-            local ts
-            ts="$(date '+%Y-%m-%d %H:%M:%S')"
-
-            if read -r rx tx < <(get_net_totals) && \
-               read -r mem_total mem_used mem_free mem_compressed < <(get_mem_totals); then
-              line="$(printf '%s rx=%s tx=%s mem_total_mb=%s mem_used_mb=%s mem_free_mb=%s mem_compressed_mb=%s\n' \
-                "$ts" "$rx" "$tx" "$mem_total" "$mem_used" "$mem_free" "$mem_compressed")"
-              echo "$line" >> "$logfile"
-              echo "[$rotation_key] $line"
-            else
-              echo "ERROR: Failed to collect stats" >&2
-              return 1
-            fi
-          }
-
+      - name: "[Phase 2] Rotation verify — 10s interval / 1min rotation / 3min"
+        shell: bash
+        run: |
           echo "--- 10s interval, 1min rotation, 3min total ---"
-          end=$(($(date +%s) + 180))
-          while [ "$(date +%s)" -lt "$end" ]; do
-            collect "$(date '+%Y%m%d%H%M')"
-            sleep 10
-          done
+          # net-mem-monitor.sh を 3分 + 少し余裕でバックグラウンド起動
+          bash scripts/net-mem-monitor.sh "$HOME/logs" 10 1 1 &
+          MONITOR_PID=$!
+          sleep 185
+          kill "$MONITOR_PID" 2>/dev/null || true
+          wait "$MONITOR_PID" 2>/dev/null || true
 
           echo ""
           echo "=== Generated log files ==="
           ls -lh "$HOME/logs/"
           echo ""
           for f in "$HOME/logs"/network_*.log; do
-            echo "--- $f ---"
+            echo "--- $(basename "$f") ---"
             cat "$f"
           done
 
-      - name: "[Phase 2] Production config smoke test — 60s interval / 60min rotation / 3min"
+      - name: "[Phase 3] Production smoke test — 60s interval / 60min rotation / 3min"
         shell: bash
         run: |
-          get_net_totals() {
-            netstat -ibn 2>/dev/null | awk '
-              NR == 1 {
-                for (i = 1; i <= NF; i++) {
-                  if ($i == "Name")   name_col = i
-                  if ($i == "Ibytes") in_col   = i
-                  if ($i == "Obytes") out_col  = i
-                }
-                next
-              }
-              !name_col || !in_col || !out_col { exit 1 }
-              $name_col == "Name" || $name_col == "lo0" || seen[$name_col]++ { next }
-              $in_col ~ /^[0-9]+$/ && $out_col ~ /^[0-9]+$/ {
-                rx += $in_col
-                tx += $out_col
-              }
-              END {
-                if (!in_col || !out_col) exit 1
-                printf "%s %s\n", rx + 0, tx + 0
-              }'
-          }
-
-          get_mem_totals() {
-            total_bytes="$(sysctl -n hw.memsize 2>/dev/null)" || return 1
-
-            vm_stat 2>/dev/null | awk -v total_bytes="$total_bytes" '
-              /page size of/ {
-                match($0, /[0-9]+/)
-                page_size = substr($0, RSTART, RLENGTH) + 0
-              }
-              /Pages free:/                  { gsub("\\.", "", $3); free       = $3 }
-              /Pages active:/                { gsub("\\.", "", $3); active     = $3 }
-              /Pages inactive:/              { gsub("\\.", "", $3); inactive   = $3 }
-              /Pages speculative:/           { gsub("\\.", "", $3); speculative = $3 }
-              /Pages wired down:/            { gsub("\\.", "", $4); wired      = $4 }
-              /Pages occupied by compressor:/ { gsub("\\.", "", $5); compressed = $5 }
-              END {
-                if (!page_size) page_size = 4096
-                mb = 1024 * 1024
-                free_mb       = (free + speculative) * page_size / mb
-                used_mb       = (active + inactive + wired + compressed) * page_size / mb
-                compressed_mb = compressed * page_size / mb
-                total_mb      = total_bytes / mb
-                printf "%.1f %.1f %.1f %.1f\n",
-                  total_mb, used_mb, free_mb, compressed_mb
-              }'
-          }
-
-          echo "--- 60s interval, 60min rotation, 3min smoke test (rotation not expected) ---"
-          end=$(($(date +%s) + 180))
-          while [ "$(date +%s)" -lt "$end" ]; do
-            ts="$(date '+%Y-%m-%d %H:%M:%S')"
-            rotation_key="$(date '+%Y%m%d%H')"
-            logfile="$HOME/logs/prod_${rotation_key}.log"
-
-            if read -r rx tx < <(get_net_totals) && \
-               read -r mem_total mem_used mem_free mem_compressed < <(get_mem_totals); then
-              line="$(printf '%s rx=%s tx=%s mem_total_mb=%s mem_used_mb=%s mem_free_mb=%s mem_compressed_mb=%s\n' \
-                "$ts" "$rx" "$tx" "$mem_total" "$mem_used" "$mem_free" "$mem_compressed")"
-              echo "$line" >> "$logfile"
-              echo "[$rotation_key] $line"
-            else
-              echo "ERROR: Failed to collect stats" >&2
-              exit 1
-            fi
-
-            sleep 60
-          done
+          echo "--- 60s interval, 60min rotation, 3min smoke test ---"
+          bash scripts/net-mem-monitor.sh "$HOME/logs-prod" 60 60 24 &
+          MONITOR_PID=$!
+          sleep 185
+          kill "$MONITOR_PID" 2>/dev/null || true
+          wait "$MONITOR_PID" 2>/dev/null || true
 
           echo ""
           echo "=== Generated log files ==="
-          ls -lh "$HOME/logs/"
+          ls -lh "$HOME/logs-prod/"
           echo ""
-          for f in "$HOME/logs"/prod_*.log; do
-            echo "--- $f ---"
+          for f in "$HOME/logs-prod"/network_*.log; do
+            echo "--- $(basename "$f") ---"
             cat "$f"
           done
