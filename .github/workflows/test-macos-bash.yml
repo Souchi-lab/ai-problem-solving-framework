@@ -57,7 +57,8 @@ jobs:
 
             vm_stat 2>/dev/null | awk -v total_bytes="$total_bytes" '
               /page size of/ {
-                if (match($0, /page size of[[:space:]]+([0-9]+)/, m)) page_size = m[1]
+                match($0, /[0-9]+/)
+                page_size = substr($0, RSTART, RLENGTH) + 0
               }
               /Pages free:/ {
                 gsub("\\.", "", $3); free = $3
