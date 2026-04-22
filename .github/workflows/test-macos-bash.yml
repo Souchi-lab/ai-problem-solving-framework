@@ -1,0 +1,111 @@
+name: Test macOS Bash
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  verify-macos-bash:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Bash version
+        shell: bash
+        run: |
+          echo "=== Shell info ==="
+          echo "SHELL: $SHELL"
+          bash --version
+          echo ""
+          echo "=== OS info ==="
+          uname -a
+          sw_vers
+
+      - name: Run network and memory monitor (single sample)
+        shell: bash
+        run: |
+          mkdir -p "$HOME/logs"
+
+          get_net_totals() {
+            netstat -ibn 2>/dev/null | awk '
+              NR == 1 {
+                for (i = 1; i <= NF; i++) {
+                  if ($i == "Name")   name_col = i
+                  if ($i == "Ibytes") in_col   = i
+                  if ($i == "Obytes") out_col  = i
+                }
+                next
+              }
+              !name_col || !in_col || !out_col { exit 1 }
+              $name_col == "Name" || $name_col == "lo0" || seen[$name_col]++ { next }
+              $in_col ~ /^[0-9]+$/ && $out_col ~ /^[0-9]+$/ {
+                rx += $in_col
+                tx += $out_col
+              }
+              END {
+                if (!in_col || !out_col) exit 1
+                printf "%s %s\n", rx + 0, tx + 0
+              }'
+          }
+
+          get_mem_totals() {
+            total_bytes="$(sysctl -n hw.memsize 2>/dev/null)" || return 1
+
+            vm_stat 2>/dev/null | awk -v total_bytes="$total_bytes" '
+              /page size of/ {
+                if (match($0, /page size of[[:space:]]+([0-9]+)/, m)) page_size = m[1]
+              }
+              /Pages free:/ {
+                gsub("\\.", "", $3); free = $3
+              }
+              /Pages active:/ {
+                gsub("\\.", "", $3); active = $3
+              }
+              /Pages inactive:/ {
+                gsub("\\.", "", $3); inactive = $3
+              }
+              /Pages speculative:/ {
+                gsub("\\.", "", $3); speculative = $3
+              }
+              /Pages wired down:/ {
+                gsub("\\.", "", $4); wired = $4
+              }
+              /Pages occupied by compressor:/ {
+                gsub("\\.", "", $5); compressed = $5
+              }
+              END {
+                if (!page_size) page_size = 4096
+
+                free_bytes = (free + speculative) * page_size
+                used_bytes = (active + inactive + wired + compressed) * page_size
+                compressed_bytes = compressed * page_size
+
+                printf "%s %s %s %s\n",
+                  total_bytes + 0,
+                  used_bytes + 0,
+                  free_bytes + 0,
+                  compressed_bytes + 0
+              }'
+          }
+
+          # ループを1回だけ実行して結果を確認
+          ts="$(date '+%Y-%m-%d %H:%M:%S')"
+          hour="$(date '+%Y%m%d%H')"
+
+          if read -r rx tx < <(get_net_totals) && \
+             read -r mem_total mem_used mem_free mem_compressed < <(get_mem_totals); then
+            line="$(printf '%s rx=%s tx=%s mem_total=%s mem_used=%s mem_free=%s mem_compressed=%s\n' \
+              "$ts" "$rx" "$tx" "$mem_total" "$mem_used" "$mem_free" "$mem_compressed")"
+            echo "$line" >> "$HOME/logs/network_${hour}.log"
+            echo "=== Logged line ==="
+            echo "$line"
+          else
+            echo "ERROR: Failed to collect stats" >&2
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Log file contents ==="
+          cat "$HOME/logs/network_${hour}.log"
