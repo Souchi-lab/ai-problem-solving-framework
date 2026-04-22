@@ -68,11 +68,13 @@ jobs:
               /Pages occupied by compressor:/ { gsub("\\.", "", $5); compressed = $5 }
               END {
                 if (!page_size) page_size = 4096
-                free_bytes       = (free + speculative) * page_size
-                used_bytes       = (active + inactive + wired + compressed) * page_size
-                compressed_bytes = compressed * page_size
-                printf "%s %s %s %s\n",
-                  total_bytes + 0, used_bytes + 0, free_bytes + 0, compressed_bytes + 0
+                mb = 1024 * 1024
+                free_mb       = (free + speculative) * page_size / mb
+                used_mb       = (active + inactive + wired + compressed) * page_size / mb
+                compressed_mb = compressed * page_size / mb
+                total_mb      = total_bytes / mb
+                printf "%.1f %.1f %.1f %.1f\n",
+                  total_mb, used_mb, free_mb, compressed_mb
               }'
           }
 
@@ -84,7 +86,7 @@ jobs:
 
             if read -r rx tx < <(get_net_totals) && \
                read -r mem_total mem_used mem_free mem_compressed < <(get_mem_totals); then
-              line="$(printf '%s rx=%s tx=%s mem_total=%s mem_used=%s mem_free=%s mem_compressed=%s\n' \
+              line="$(printf '%s rx=%s tx=%s mem_total_mb=%s mem_used_mb=%s mem_free_mb=%s mem_compressed_mb=%s\n' \
                 "$ts" "$rx" "$tx" "$mem_total" "$mem_used" "$mem_free" "$mem_compressed")"
               echo "$line" >> "$logfile"
               echo "[$rotation_key] $line"
@@ -151,11 +153,13 @@ jobs:
               /Pages occupied by compressor:/ { gsub("\\.", "", $5); compressed = $5 }
               END {
                 if (!page_size) page_size = 4096
-                free_bytes       = (free + speculative) * page_size
-                used_bytes       = (active + inactive + wired + compressed) * page_size
-                compressed_bytes = compressed * page_size
-                printf "%s %s %s %s\n",
-                  total_bytes + 0, used_bytes + 0, free_bytes + 0, compressed_bytes + 0
+                mb = 1024 * 1024
+                free_mb       = (free + speculative) * page_size / mb
+                used_mb       = (active + inactive + wired + compressed) * page_size / mb
+                compressed_mb = compressed * page_size / mb
+                total_mb      = total_bytes / mb
+                printf "%.1f %.1f %.1f %.1f\n",
+                  total_mb, used_mb, free_mb, compressed_mb
               }'
           }
 
@@ -168,7 +172,7 @@ jobs:
 
             if read -r rx tx < <(get_net_totals) && \
                read -r mem_total mem_used mem_free mem_compressed < <(get_mem_totals); then
-              line="$(printf '%s rx=%s tx=%s mem_total=%s mem_used=%s mem_free=%s mem_compressed=%s\n' \
+              line="$(printf '%s rx=%s tx=%s mem_total_mb=%s mem_used_mb=%s mem_free_mb=%s mem_compressed_mb=%s\n' \
                 "$ts" "$rx" "$tx" "$mem_total" "$mem_used" "$mem_free" "$mem_compressed")"
               echo "$line" >> "$logfile"
               echo "[$rotation_key] $line"
